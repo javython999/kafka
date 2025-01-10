@@ -83,7 +83,244 @@
 
 # 2. 카프카 빠르게 시작해보기
 ## 2.1 실습용 카프카 브로커 설치
-## 2.2 카프마 커맨드 라인 툴
+
+> 카프카 브로커 실행 옵셜 설정
+```shell
+wget https://archive.apache.org/dist/kafka/2.5.0/kafka_2.12-2.5.0.tgz
+tar xvf kafka_2.12-2.5.0.tgz
+```
+```shell
+vi config/server.properties
+```
+config 폴더에 있는 server.properties 파일에는 카프카 브로커가 클러스터 운영에 필요한 옵션들을 지정할 수 있다.
+여기서 실습용 카프카 브로커를 실행할 것이므로 `advertised.listener`만 설정하면된다.
+`advertised.listener`는 카프카 클라이언트 또는 커맨드 라인 툴을 브로커와 연결할 때 사용된다.
+현재 접속하고 있는 인스턴트의 퍼블릭 IP와 카프카 기본 포트인 9092를 `PLAINTEXT://`와 함께 붙여넣고 `advertised.listener`의 주석을 해제한다.
+
+> 주키퍼 실행
+
+카프카 바이너리가 포함된 폴더에는 브로커와 같이 실행할 주키퍼가 준비되어 있다.
+분산 코디네이션 서비스를 제공하는 주키퍼는 카프카의 클러스터 설정 리더 정보, 컨트롤러 정보를 담고 있어 카프카를 실행하는 데에 필요한 애플리케이션이다.
+주키퍼를 상용환경에서 안전하게 운영하그 위해서는 3대 이상의 서버로 구성하여 사용하지만 실습에는 동일한 서버에 카프카와 동시에 1대만 실행시켜 사용할 수도 있다.
+
+```shell
+bin/zookeeper-server.start.sh -daemon config/zookeeper.properties
+jps -vm
+```
+
+> 카프카 브로커 실행 및 로그 확인
+
+이제 카프카 브로커를 실행할 마지막 단계이다.
+-daemon 옵션과 함께 카프카 브로커를 백그라운드 모드로 실행할 수 있다. kafka-server-start.sh 명령어를 통해 카프카 브로커를 실행한 뒤
+jps 명령어를 통해 주키퍼와 브로커 프로세스의 동작 여부를 알 수 있다.
+
+```shell
+bin/kafka-server-start.sh -daemon config/server.properties
+jps -m
+```
+
+## 2.2 카프카 커맨드 라인 툴
+카프카에서 제공하는 카프카 커맨드 라인 툴들은 카프카를 운영할 때 가장 많이 접하는 도구다.
+커맨드 라인 툴을 통해 카프카 브로커 운영에 필요한 다양한 명령을 내릴 수 있다.
+카프카 클라이언트 애플리케이션을 운영할 때는 카프카 클러스터와 연동하여 데이터를 주고 받는 것도 중요하지만
+토픽이나 파티션 개수 변경과 같은 명령을 실행해야하는 경우도 자주 발생한다. 그렇기 때문에 카프카 커맨드 라인 툴과 각 툴별 옵션에 대해 알고 있어야 한다.
+
+### 2.2.1 kafka-topics.sh
+이 커맨드 라인 툴을 통해 토픽과 관련된 명령을 실행할 수 있다.
+토픽이란 카프카에서 데이터를 구분하는 가장 기본적인 개념이다.
+RDBMS에서 사용하는 테이블과 유사하다고 볼 수 있다.
+카프카 클러스터에 토픽은 여러 개 존재할 수 있다.
+토픽에는 파티션이 존재하는데 파티션의 개수는 최소 1개부터 시작한다.
+파티션은 카프카에서 토픽을 구성하는 데에 아주 중요한 요소이다.
+파티션을 통해 한 번에 처리할 수 있는 데이터 양을 늘릴 수 있고 토픽내부에서도 파티션을 통해 데이터의 종류를 나누어 처리할 수 있기 때문이다.
+
+> 토픽 생성
+
+`kafka-topics.sh`를 통해 토픽 관련 명령을 실행할 수 있다.
+`--create` 옵션을 사용하요 hello.kafka라는 이름을 가진 토픽을 생성할 수 있다.
+각 옵션이 어떤 역할을 하는지 알아보자.
+
+```shell
+bin/kafka-topics.sh --create --bootstrap-server my-kafka:9092 --topic hello.kafka
+```
+```shell
+Created topic hello.kafka.
+```
+
+1. `--create`: 토픽을 생성하는 명령어라는 것을 명시한다.
+2. `--bootstrap-server`: 토픽을 생성할 카프카 클러스터를 구성하는 브로커들의 IP와 port를 적는다.
+3. `--topic`: 토픽의 이름을 작성한다.
+
+토픽은 파티션 개수, 복제 개수 등과 같이 다양한 옵션이 포함되어 있지만 명시하지 않으면 모두 브로커에 설정된 기본값으로 생성된다.
+만약 파티션 개수, 복제 개수, 토픽 데이터 유지 기간 옵션들을 지정하여 토픽을 생성하고 싶다면 다음과 같이 명령하면 된다.
+
+```shell
+bin/kafka-topics.sh --create --bootstrap-server my-kafka:9092 --partitions 3 --replication-factor 1 --config retention.ms=172800000 --topic hello.kafka.2
+```
+1. `--partitions`: 파티션 개수를 지정할 수 있다. 파티션 최소 개수는 1개이다. 이 옵션을 사용하지 않으면 카프카 브로커 설정 파일(config/sever.properties)에 설정된 `num.partitions` 옵션 값에 따라 생성된다.
+2. `--replication-factor`: 토픽의 파티션을 복제할 복제 개수를 지정한다. 1은 복제를 하지 않고 2는 1개의 복제본을 사용하겠다는 의미이다. 파티션 데이터는 각 브로커마다 저장된다.
+한 개의 브로커에 장애가 발생하더라도 나머지 한 개 브로커에 저장된 데이터를 사용하여 안전하게 데이터를 처리할 수 있다. 이 옵션을 사용하지 않으면 카프카 브로커 설정에 있는 default.replication.factor 옵션값에 따라 생성된다.
+3. `--config`: kafka-topics.sh 명령에 포함되지 않은 추가적인 설정을 할 수도 있다. retention.ms는 토픽의 데이터를 유지하는 기간을 뜻한다. 
+
+> 토픽 리스트 조회
+
+```shell
+bin/kafka-topics.sh --bootstrap-server my-kafka:9092 --list
+```
+```shell
+hello.kafka
+hello.kafka.2
+```
+
+> 토픽 상세 조회
+
+```shell
+bin/kafka-topics.sh --bootstrap-server my-kafka:9092 --describe --topic hello.kafka.2
+```
+```shell
+Topic: hello.kafka.2    PartitionCount: 3       ReplicationFactor: 1    Configs: segment.bytes=1073741824,retention.ms=172800000
+        Topic: hello.kafka.2    Partition: 0    Leader: 0       Replicas: 0     Isr: 0
+        Topic: hello.kafka.2    Partition: 1    Leader: 0       Replicas: 0     Isr: 0
+        Topic: hello.kafka.2    Partition: 2    Leader: 0       Replicas: 0     Isr: 0
+```
+이미 생성된 토픽의 상태를 `--describe` 옵션을 사용하여 확인할 수 있다.
+파티션 개수가 몇개인지, 복제된 파티션이 위치한 브로커의 번호, 기타 토픽을 구성하는 설정들을 출력한다.
+토픽이 가진 리더가 현재 어느 브로커에 존재하는지도 같이 확인할 수 있다.
+
+> 토픽 옵션 수정
+
+토픽에 설정된 옵션을 변경하기 위해서는 `kafka-topics.sh` 또는 `kafka-configs.sh` 두 개를 사용해야 한다.
+파티션 개수를 변경하려면 `kafka-topics.sh`를 사용해야 하고 토픽 삭제 정책인 리텐션 기간을 변경하려면 `kafka-configs.sh`를 사용해야 한다. 
+이와 같이 파편화 된 이유는 토픽에 대한 정보를 관리하는 일부 로직이 다른 명령어로 넘어갔기 때문이다.
+카프카 2.5까지는 `kafka-topics.sh`와 `--alter` 옵션을 사용하여 리텐션 기간을 변경할 수 있지만 추후 삭제될 예정이라고 경고 메세지가 발생하므로
+`kafka-configs.sh`를 사용하자.
+토픽 옵션중 `다이나믹 토픽 옵션`이라고 정의되는 일부 옵션들(log.segment.bytes, log.retention.ms 등)은 `kafka-configs.sh`를 통해 수정할 수 있다.
+파티션 개수를 3개에서 4개로 늘리고, 리텍션 기간을 17280000ms에서 86400000ms로 변경해보자.
+
+```shell
+bin/kafka-topics.sh --bootstrap-server my-kafka:9092 --topic hello.kafka --alter --partitions 4
+bin/kafka-topics.sh --bootstrap-server my-kafka:9092 --topic hello.kafka --describe
+```
+```shell
+Topic: hello.kafka      PartitionCount: 4       ReplicationFactor: 1    Configs: segment.bytes=1073741824
+        Topic: hello.kafka      Partition: 0    Leader: 0       Replicas: 0     Isr: 0
+        Topic: hello.kafka      Partition: 1    Leader: 0       Replicas: 0     Isr: 0
+        Topic: hello.kafka      Partition: 2    Leader: 0       Replicas: 0     Isr: 0
+        Topic: hello.kafka      Partition: 3    Leader: 0       Replicas: 0     Isr: 0
+```
+* `--alter` 옵션과 `--partitions` 옵션을 함께 사용하여 파티션 개수를 변경할 수 있다. 토픽의 프티션을 늘릴 수 있지만 줄일 수는 없다. 그러므로 파티션 개수를 늘리 때는 반드시 늘려야 하는 상황인지 판단하는 것이 중요하다.
+
+
+```shell
+bin/kafka-configs.sh --bootstrap-server my-kafka:9092 --entity-type topics --entity-name hello.kafka --alter --add-config retention.ms=86400000
+```
+```shell
+Completed updating config for topic hello.kafka.
+```
+```shell
+bin/kafka-configs.sh --bootstrap-server my-kafka:9092 --entity-type topics --entity-name hello.kafka --describe
+```
+```shell
+Dynamic configs for topic hello.kafka are:
+  retention.ms=86400000 sensitive=false synonyms={DYNAMIC_TOPIC_CONFIG:retention.ms=86400000}
+```
+* `retention.ms`를 수정하기 위해 `kafka-configs.sh`와 `--alter`, `--add-config` 옵션을 사용했다. `--add-config` 옵션을 사용하면 이미 존재하는 설정값은 변경하고
+존재하지 않는 설정값은 신규로 추가한다.
+
+
+### 2.2.2 kafka-console-producer.sh
+생성된 hello.kafka 토픽에 데이터를 넣을 수 있는 kafka-console-producer.sh 명령어를 실행해 보자.
+토픽에 넣는 데이터는 `레코드`라고 부르며 `메시지 키(key)`와 `메시지 값(value)`으로 이루어져 있다.
+이번에는 메사지 키 없이 메시지 값만 보내도록 하자.
+메시지 키는 자바의 null로 기본 설정되어 브로커로 전송된다.
+
+```shell
+bin/kafka-console-producer.sh --bootstrap-server my-kafka:9092 --topic hello.kafka
+>hello
+>kafka
+>0
+>1
+>2
+>3
+>4
+>5
+```
+키보드로 문자를 작성하고 엔터 키를 누르면 별다른 응답 없이 메시지 값이 전송된다.
+여기서 주의할 점은 `kafka-console-producer.sh`로 전송되는 레코드 값은 UTF-8을 기반으로 Byte로 변환되고 ByteArraySerializer로만 직렬화 된다는 점이다.
+즉 String이 아닌 타입으로는 직렬화하여 전송할 수 없다. 
+그러므로 텍스트 목적으로 문자열을 전송할 수 있고 다른 타입으로 직렬화하여 데이터를 브로커로 전송하고 싶다면 카프카 프로듀서 애플리케이션을 직접 개발해야 한다.
+
+이제 메시지 키를 가지는 레코드를 전송해보자.
+메시지 키를 가지는 레코드를 전송하기 위해서는 몇가지 옵션을 작성해야 한다.
+
+```shell
+bin/kafka-console-producer.sh --bootstrap-server my-kafka:9092 --topic hello.kafka --property "parse.key=true" --property "key.separator=:"
+>key1:no1
+>key2:no2
+>key3:no3
+```
+* `"parse.key=true"`를 true로 두면 레코드를 전송할 때 메시지 키를 추가할 수 있다.
+* `"key.separator=:"` 메시지 키와 메시지 값을 구분하는 구분자를 선언한다. `key.separator`를 선언하지 않으면 기본 설정은 Tab delimiter(\t)이다. 그러므로 key.separator를 선언하지 않고 메시지를 보내려면 메시지 키를 작성하고 탭 키를 누른 뒤 메시지 값을 작성하고 엔터를 누른다.
+
+메시지 키와 메시지 값을 함께 전송한 레코드는 토픽의 파티션에 저장된다.
+메시지 키가 null인 경우에는 프로듀서가 파티션으로 전성할 때 레코드 배치 단위로 라운드 로빈으로 전송한다.
+메시지 키가 존재하는 경우에는 키의 해시값을 작성하여 존재하는 파티션 중 한 개에 할당된다.
+이로 인해 메시지 키가 동일한 경우에는 동일한 파티션으로 전송된다.
+다만, 이런 메시지 키와 파티션 할당은 프로듀서에서 설정된 파티셔너에 의해 결졍되는데, 
+기본 파티셔너의 경우 이와 같은 동작을 보장한다.
+커스텀 파티셔너를 사요알 경우에는 메시지 키에 따른 파티션 할당이 다르게 동작할 수도 있으니 참고하자.
+
+### 2.2.3 kafka-console-consumer.sh
+hello.kafka 토픽으로 전송한 데이터는 `kafka-console-consumer.sh` 명령어로 확인할 수 있다.
+이때 필수 옵션으로 `--bootstrap-server`에 카프카 클러스터 정보, `--topic`에 토픽 이름이 필요하다. 추가로 `--from-beginning` 옵션을 주면 토픽에 저장된 가장 처음 데이터부터 출력한다.
+
+```shell
+bin/kafka-console-consumer.sh --bootstrap-server my-kafka:9092 --topic hello.kafka --from-beginning
+```
+```shell
+kafka
+4
+5
+no2
+3
+hello
+no3
+0
+1
+2
+no1
+```
+
+만약 데이터의 메시지 키와 메시지 값을 확인하고 싶다면 `--property` 옵션을 사용하면 된다.
+```shell
+bin/kafka-console-consumer.sh --bootstrap-server my-kafka:9092 --topic hello.kafka --property print.key=true --property key.separator="-" --group hello-group --from-beginning
+```
+```shell
+null-kafka
+null-4
+null-5
+key2-no2
+null-3
+null-hello
+key3-no3
+null-0
+null-1
+null-2
+key1-no1
+```
+* `--property print.key=true`: 메시지 키를 확인하기 위해 `print.key`를 true로 설정했다.
+* `--property key.separator="-"`: 메시지 키 값을 구분하기 위해 `key.separator`를 설정했다. 설정하지 않으면 tab delimiter(\t)가 기본값으로 사용된다.
+* `--group hello-group`: 신규 컨슈머 그룹을 생성했다. 컨슈머 그룹은 1개 이상의 컨슈머로 이루어져 있다. 이 컨슈머 그룹을 통해 가져간 토픽의 메시지는 가져간 메시지에 대해 커밋을 한다.
+커밋이란 컨슈머가 특정 레코드까지 처리를 완료했다고 레코드의 오프셋 번호를 카프카 브로커에 저장하는 것이다.
+* 커밋 정보는 __consumer_offsets 이름의 내부 토픽에 저장된다.
+
+`kafka-console-producer.sh`로 전송했던 데이터의 순서가 현재 출력되는 순서와 다르다.
+이는 카프카의 핵심인 파티션 개념 때문에 생기는 현상이다.
+`kafka-console-consumer.sh`를 통해 데이터를 가져가게 되면 토픽의 모든 파티션으로부터 동일한 중요도로 데이터를 가져간다.
+이로 인해 프로듀서가 토픽에 넣은 데이터의 순서와 컨슈머가 토픽에서 가져간 데이터의 순서가 달라지게 된다.
+만약 토픽에 넣은 데이터의 순서를 보장하고 싶다면 가장 좋은 방법은 파티션 1개로 구성된 토픽을 만드는 것이다.
+한 개의 파티션에서는 데이터의 순서를 보장하기 때문이다.
+
 ## 2.3 정리
 
 ---
