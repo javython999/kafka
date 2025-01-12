@@ -426,6 +426,139 @@ bin/kafka-delete-records.sh --bootstrap-server my-kafka:9092 --offset-json-file 
 
 # 3. 카프카 기본 개념 설명
 ## 3.1 카프카 브로커, 클러스터, 주키퍼
+카프카 브로커는 카프카 클라이언트와 데이터를 주고 받기 위해 사용하는 주체이자, 데이터를 분산 저장하여 장애가 발생하더라도 안전하게 사용할 수 있도록
+도와주는 애플리케이션이다.
+
+하나의 서버에는 한 개의 카프카 브로커 프로세스가 실행된다.
+카프카 브로커 서버 1대로도 기본 기능이 실행되지만 데이터를 안전하게 처리하기 위해 3대 이상의 브로커 서버를 1개의 클러스터로 묶어서 운영한다.
+카프카 클러스터로 묶인 브로커들은 프로듀서가 보낸 데이터를 안전하게 분산 저장하고 복제하는 역할을 수행한다.
+
+> 데이터 저장, 전송
+
+프로듀서로부터 데이터를 전달받으면 카프카 브로커는 프로듀서가 요청한 토픽의 파티션에 데이터를 저장하나다.  
+컨슈머가 데이터를 요청하면 파티션에 저장된 데이터를 전달한다.
+프로듀서로부터 전달된 데이터는 파일 시스템에 저장된다. 실습용으로 진행한 카프카에서 저장된 파일 시스템을 직접 확인할 수 있다.
+
+```shell
+ls /tmp/kafka-logs
+```
+```shell
+__consumer_offsets-0   __consumer_offsets-16  __consumer_offsets-23  __consumer_offsets-30  __consumer_offsets-38  __consumer_offsets-45  __consumer_offsets-8       hello.kafka.2-1
+__consumer_offsets-1   __consumer_offsets-17  __consumer_offsets-24  __consumer_offsets-31  __consumer_offsets-39  __consumer_offsets-46  __consumer_offsets-9       hello.kafka.2-2
+__consumer_offsets-10  __consumer_offsets-18  __consumer_offsets-25  __consumer_offsets-32  __consumer_offsets-4   __consumer_offsets-47  cleaner-offset-checkpoint  log-start-offset-checkpoint
+__consumer_offsets-11  __consumer_offsets-19  __consumer_offsets-26  __consumer_offsets-33  __consumer_offsets-40  __consumer_offsets-48  hello.kafka-0              meta.properties
+__consumer_offsets-12  __consumer_offsets-2   __consumer_offsets-27  __consumer_offsets-34  __consumer_offsets-41  __consumer_offsets-49  hello.kafka-1              recovery-point-offset-checkpoint
+__consumer_offsets-13  __consumer_offsets-20  __consumer_offsets-28  __consumer_offsets-35  __consumer_offsets-42  __consumer_offsets-5   hello.kafka-2              replication-offset-checkpoint
+__consumer_offsets-14  __consumer_offsets-21  __consumer_offsets-29  __consumer_offsets-36  __consumer_offsets-43  __consumer_offsets-6   hello.kafka-3              verify-test-0
+__consumer_offsets-15  __consumer_offsets-22  __consumer_offsets-3   __consumer_offsets-37  __consumer_offsets-44  __consumer_offsets-7   hello.kafka.2-0
+```
+* 실습용 카프카를 실행 할때 `config/server.properties`의 `log.dir` 옵션에 정의한 디렉토리에 데이터를 저장한다.
+토픽 이름과 파티션 번호의 조합으로 하위 디렉토리를 생성하여 데이터를 저장한다.
+
+
+```shell
+ls /tmp/kafka-logs/hello.kafka-0
+```
+```shell
+00000000000000000004.index  00000000000000000004.log  00000000000000000004.timeindex  leader-epoch-checkpoint
+```
+* hello.kafka 토픽의 0번 파티션에 존재하는 데이터를 확인 할 수 있다. log에는 메시지와 메타데이터를 저장한다. 
+* index는 메시지의 오프셋을 인덱싱한 정보를 담은 파일이다.
+* timeindex 파일에는 메시지에 포함된 timestamp 값을 기준으로 인덱싱한 정보가 담겨 있다.
+
+카프카는 데이터를 메모리나 데이터베이스에 저장하지 않는다.
+캐시 메모리를 구현하여 사용하지도 않는다.
+파일 시스템에 저장하기 때문에 파일 I/O로 인해 속도 이슈가 발생하지 않을까 의문을 가질 수 있다.
+그러나 카프카는 페이지 캐시를  사용하여 디스크 입출력 속도를 높여 이 문제를 해결했다.
+
+페이지 캐시란 OS에서 파일 I/O의 성능 향상을 위해 만들어 놓은 메모리 영역을 뜻한다.
+한 번 읽은 파일의 내용은 메모리의 페이지 캐시 영역에 저장 시킨다.
+추후 동일한 파일의 접근이 일어나면 디스크에서 읽지 않고 메모리에서 직접 읽는 방식이다.
+JVM 위에서 동작하는 카프카 브로커가 페이지 캐시를 사용하지 않는다면 지금과 같이 빠른 동작을 기대할 수 없다.
+
+> 데이터 싱크, 복제
+
+데이터 복제는 카프카를 장애 허용 시스템으로 동작하도록 하는 원동력이다.
+복제의 이유는 클러스터로 묶인 브로커 중 일부에 장애가 발생하더라도 데이터를 유실하지 않고 안전하게 사용하기 위함이다.
+
+카프카의 데이터 복제는 파티션 단위로 이루어진다.
+토픽을 생성할 때 파티션의 복제 개수도 같이 성정되는 직접 옵션을 선택하지 않으면 브로커에 설정된 옵션 값을 따라 간다.
+복제 개수의 최소값은 1(복제 없음)이고 최댓값은 브로커 개수만큼 설정하여 사용할 수 있다.
+
+복제된 파티션은 리더와 팔로워로 구성된다.
+프로듀서 또는 컨슈머와 직접 통신하는 파티션은 리더,
+나머지 복제 데이터를 가지고 있는 파티션을 팔로워라고 부른다.
+
+팔로워들은 리더의 오프셋을 확인하여
+자신이 가지고 있는 오프셋과 차이가 나는 경우 리더 파티션으로부터 데이터를 가져와서
+자신의 파티션에 저장하는데, 이 과정을 복제라고 부른다.
+
+복제 개수만큼 저장 용량이 증가한다는 단점이 있다.
+그러나 복제를 통해 데이터를 더 안전하게 사용할 수있다는 강력한 장점 때문에
+카프카를 운영할 때 2 이상의 복제 개수를 정하는 것이좋다.
+
+리더가 장애로 인해 사용할 수 없게 됐을 때
+팔로워중 하나가 리더 지위를 넘겨 받는다. 이를 통해 데이터가 유실되지 않고 
+컨슈머나 프로듀서와 데이터를 주고받도록 동작할 수 있다.
+
+> 컨트롤러
+
+클러스터의 다수 브로커 중 한 대가 컨트롤러의 역할을 한다.
+컨트롤러는 다른 브로커들의 상태를 체크하고 
+브로커가 클러스터에서 빠지는 경우 해당 브로커에 존재하는 리더를 재분배한다.
+카프카는 지속적으로 데이터를 처리해야 하므로 브로커의 상태가 비정상이라면
+빠르게 클러스터에서 빼내는 것이 중요하다.
+만약 컨트롤러 역할을 하는 브로커에 장애가 생기면 다른 브로커가 컨트롤러 역할을 한다.
+
+> 데이터 삭제
+
+카프카는 다른 메시징 플랫폼과 다르게 컨슈머가 데이터를 가져가더라도 토픽의 데이터는 삭제되지 않는다.
+또한 컨슈머나 프로듀서가 데이터 삭제를 요청할 수도 없다.
+
+오직 브로커만이 데이터를 삭제할 수 있다.
+데이터 삭제는 파일 단위로 이루어지는데 이 단위를 `로그 세그먼트`라고 부른다.
+이 세그먼트에는 다수의 데이터가 들어 있기 때문에 특정 데이터를 선별해서 삭제할 수 없다.
+세그먼트는 데이터가 쌓이는 동안 파일 시스템으로 열려있으며 카프카 브로커에 `log.segment.bytes` 또는 `log.segment.ms` 옵션 값이 설정되면 세그먼트 파일이 닫힌다.
+세그먼트 파일이 닫히게 되는 기본값은 1GB용량에 도달했을 때인데 간격을 더 줄이고 싶다면 작은 용량으로 설정하면 된다.
+너무 작은 용량으로 설정하면 데이터를 저장하는 동안 세그먼트 파일을 자주 여닫음으로써 부하가 발생할 수 있어 주의해야 한다.
+닫힌 세그먼트 파일은 `log.segment.bytes` 또는 `log.segment.ms` 옵션에 설정값이 넘으면 삭제된다.
+닫힌 세그먼트 파일을 체크하는 간격은 카프카 브로커의 옵션에 설정된 `log.retention.check.interval.ms`에 따른다.
+
+> 컨슈머 오프셋 저장
+
+컨슈머 그룹은 토픽이 특정 파티션으로부터 데이터를 가져가서 처리하고 이 파티션의 어느 레코드까지 가져갔는지 확인하기 위해 오프셋을 커밋한다.
+커밋한 오프셋은 `__consumer_offsets` 토픽에 저장한다.
+여기에 저장된 오프셋을 토대로 컨슈머 그룹은 다음 레코드를 가져가서 처리한다.
+
+> 코디네이터
+
+클러스터의 다수 브로커 중 한 대는 코디네이터의 역할을 수행한다.
+코디네이터는 컨슈머 그룹의 상태를 체크하고 파티션을 컨슈머와 매칭되도록 분배하는 역할을 한다.
+
+컨슈머가 컨슈머 그룹에서 빠지면 매칭되지 않은 파티션을 정상 동작하는 컨슈머로 할당하여 끊임없이 데이터가 처리되도록 도와준다.
+이렇게 파티션을 컨슈머로 재할당하는 과정을 리밸런스라고 부른다.
+
+> 주키퍼
+
+주키퍼는 카프카의 메타데이터를 관리하는 데에 사용된다.
+카프카 서버에서 직접 주키퍼에 붙으려면 카프카 서버에서 실행되고 있는 주키퍼에 연결해야 한다.
+동일 환경에 접속하므로 localhost로 접속하며, 기본 포트는 2181이다.
+
+```shell
+bin/zookeeper-shell.sh my-kafka:2181
+```
+```shell
+Connecting to my-kafka:2181
+Welcome to ZooKeeper!
+JLine support is disabled
+
+WATCHER::
+
+WatchedEvent state:SyncConnected type:None path:null
+```
+
+
+
 ## 3.2 토픽과 파티션
 ## 3.3 레코드
 ## 3.4 카프카 클라이언트
