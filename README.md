@@ -626,6 +626,236 @@ WatchedEvent state:SyncConnected type:None path:null
 레코드의 추가적인 정보를 담는 메타데이터 저장소 용도로 사용한다. 헤더는 키/값 형태로 데이터를 추가하여 레코드의 속성을 저장하여 컨슈머에서 참조할 수 있다.
 
 ## 3.4 카프카 클라이언트
+카프카 클라이언트는 카프카 브로커와 상호작용하기 위한 다양한 API를 제공한다.
+
+### 3.4.1 프로듀서 API
+카프카에서 데이터의 시작점은 프로듀서이다.
+프로듀서 애플리케이션은 카프카에 필요한 데이터를 선언하고 브로커의 특정 토픽의 파티션에 전송한다.
+프로듀서는 데이터를 전송할 때 리더 파티션을 가지고 있는 카프카 브로커와 직접 통신한다.
+
+프로듀서를 구현하는 가장 기초적인 방법은 카프카 클라이언트를 라이브러리로 추가하여 자바 기본 애플리케이션을 만드는 것이다.
+프로듀서는 데이터를 직렬화하여 카프카 브로커로 보내기 때문에 자바에서 선언 가능한 모둔 형태를 브로커로 전송할 수 있다.
+직렬화를 사용하면 프로듀서는 자바 기본형과 참조형뿐만 이니라, 동영상, 이미지 같은 바이너리 데이터도 프로듀서를 통해 전송할 수 있다.
+
+> SimpleProducer
+```java
+@Slf4j
+public class SimpleProducer {
+
+    private final static String TOPIC_NAME = "test";
+    private final static String BOOTSTRAP_SERVERS = "my-kafka:9092";
+
+    public static void main(String[] args) {
+        Properties configs = new Properties();
+        configs.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, BOOTSTRAP_SERVERS);
+        // 메시지 키, 메시지 값을 직렬화하기 위한 직렬화 클래스를 선언한다.
+        configs.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        configs.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+
+        KafkaProducer<String, String> producer = new KafkaProducer<>(configs);
+
+        String messageValue = "testMessage";
+        // 카프카 브로커로 데이터를 보내기 위해 ProducerRecord를 생성한다.
+        // 메시지 키는 따로 설정하지 않아 null로 전송된다.
+        ProducerRecord<String, String> record = new ProducerRecord<>(TOPIC_NAME, messageValue);
+
+        // 생성한 ProducerRecord를 전송하기 위해 record를 파라미터로 가지는 send() 메서드를 호출한다.
+        // send()는 즉각적인 전송을 뜻하는 것이 아니라, 파라미터로 들어간 record를 프로듀서 내부에 가지고 있다가 배치 형태로 묶어서 브로커에 전송한다.
+        // 이러한 전송방식을 '배치 전송'이라고 부른다.
+        producer.send(record);
+        log.info("{}", record);
+
+        // flush()를 통해 프로듀서 내부 버퍼에 가지고 있는 레코드 배치를 브로커로 전송한다.
+        producer.flush();
+
+        // 애플리케이션을 종료하기 전에 리소스를 반환한다.
+        producer.close();
+    }
+}
+```
+
+카프카 프로듀서 애플리케이션을 실행하기 전에 전송될 토픽을 생성한다.
+```shell
+bin/kafka-topics.sh --bootstrap-server my-kafka:9092 --create --topic test --partitions 3
+```
+```shell
+Created topic test.
+```
+```shell
+[main] INFO org.apache.kafka.clients.producer.ProducerConfig - ProducerConfig values: 
+	acks = 1
+	batch.size = 16384
+	bootstrap.servers = [my-kafka:9092]
+	buffer.memory = 33554432
+	client.dns.lookup = default
+	client.id = producer-1
+	compression.type = none
+	connections.max.idle.ms = 540000
+	delivery.timeout.ms = 120000
+	enable.idempotence = false
+	interceptor.classes = []
+	key.serializer = class org.apache.kafka.common.serialization.StringSerializer
+	linger.ms = 0
+	max.block.ms = 60000
+	max.in.flight.requests.per.connection = 5
+	max.request.size = 1048576
+	metadata.max.age.ms = 300000
+	metadata.max.idle.ms = 300000
+	metric.reporters = []
+	metrics.num.samples = 2
+	metrics.recording.level = INFO
+	metrics.sample.window.ms = 30000
+	partitioner.class = class org.apache.kafka.clients.producer.internals.DefaultPartitioner
+	receive.buffer.bytes = 32768
+	reconnect.backoff.max.ms = 1000
+	reconnect.backoff.ms = 50
+	request.timeout.ms = 30000
+	retries = 2147483647
+	retry.backoff.ms = 100
+	sasl.client.callback.handler.class = null
+	sasl.jaas.config = null
+	sasl.kerberos.kinit.cmd = /usr/bin/kinit
+	sasl.kerberos.min.time.before.relogin = 60000
+	sasl.kerberos.service.name = null
+	sasl.kerberos.ticket.renew.jitter = 0.05
+	sasl.kerberos.ticket.renew.window.factor = 0.8
+	sasl.login.callback.handler.class = null
+	sasl.login.class = null
+	sasl.login.refresh.buffer.seconds = 300
+	sasl.login.refresh.min.period.seconds = 60
+	sasl.login.refresh.window.factor = 0.8
+	sasl.login.refresh.window.jitter = 0.05
+	sasl.mechanism = GSSAPI
+	security.protocol = PLAINTEXT
+	security.providers = null
+	send.buffer.bytes = 131072
+	ssl.cipher.suites = null
+	ssl.enabled.protocols = [TLSv1.2]
+	ssl.endpoint.identification.algorithm = https
+	ssl.key.password = null
+	ssl.keymanager.algorithm = SunX509
+	ssl.keystore.location = null
+	ssl.keystore.password = null
+	ssl.keystore.type = JKS
+	ssl.protocol = TLSv1.2
+	ssl.provider = null
+	ssl.secure.random.implementation = null
+	ssl.trustmanager.algorithm = PKIX
+	ssl.truststore.location = null
+	ssl.truststore.password = null
+	ssl.truststore.type = JKS
+	transaction.timeout.ms = 60000
+	transactional.id = null
+	value.serializer = class org.apache.kafka.common.serialization.StringSerializer
+
+[main] INFO org.apache.kafka.common.utils.AppInfoParser - Kafka version: 2.5.0
+[main] INFO org.apache.kafka.common.utils.AppInfoParser - Kafka commitId: 66563e712b0b9f84
+[main] INFO org.apache.kafka.common.utils.AppInfoParser - Kafka startTimeMs: 1736768697044
+[kafka-producer-network-thread | producer-1] INFO org.apache.kafka.clients.Metadata - [Producer clientId=producer-1] Cluster ID: w5GFP7SyQ8GsOQoHtU7aFw
+[main] INFO com.errday.kafka.producer.SimpleProducer - ProducerRecord(topic=test, partition=null, headers=RecordHeaders(headers = [], isReadOnly = true), key=null, value=testMessage, timestamp=null)
+[main] INFO org.apache.kafka.clients.producer.KafkaProducer - [Producer clientId=producer-1] Closing the Kafka producer with timeoutMillis = 9223372036854775807 ms.
+```
+* 카프카 프로듀서 구동 시 설정한 옵션들이 출력된다.
+* 카프카 클라이언트의 버전이 출력된다.
+* 전송한 ProducerRecord가 출력된다. ProducerRecord 인스턴스 생성 시 메시키 키를 설정하지 않아 null로 설정된 것을 확인할 수 있다.
+
+토픽에 데이터가 전송되었는지 확인하기 위해 `kafka-console-consumer`명령으로 확인해보자.
+```shell
+bin/kafka-console-consumer.sh --bootstrap-server my-kafka:9092 --topic test --from-beginning
+```
+```shell
+testMessage
+```
+
+> 프로듀서 중요 개념
+
+프로듀서는 카프카 브로커로 데이터를 전송할 때 내부적으로 파티셔너, 배치 생성 단계를 거친다. 
+KafkaProducer 인스턴스가 `send()` 메서드를 호출하면 ProducerRecord는 파티셔너에서 토픽의 어느 파티션으로 전송할 것인지 정해진다.
+KafkaProducer 인스턴스 생성시 파티셔너를 따로 설정하지 않으면 기본값인 DefaultPartitioner로 설정된다.
+파티셔너에 의해 구분된 레코드는 데이터를 전송하기 전에 어큐뮬레이터에 데이터를 버퍼로 쌓아놓고 발송한다.
+버퍼에 쌓인 데이터는 배치로 묶어서 전송함으로써 카프카의 프로듀서 처리량을 향샹시키는 데에 상당한 도움을 준다.
+
+프로듀서 API를 사용하면 `UniformStickyPartitioner`와 `RoundRobinPartitioner` 2개 파티션을 제공한다.
+카프카 클라이언트 2.5.0 버전에서는 파티셔너를 지정하지 않은 경우 `UniformStickyPartitioner`가 기본 설정된다.
+
+`UniformStickyPartitioner`, `RoundRobinPartitioner` 둘 다 메시지 키가 있을 때는 메시지 키의 해식밧과파티션을 매칭하여 데이터를 전송한다는 점이 동일하다.
+메시지 키가 없을 때는 파티션에 최대한 동일하게 분배하는 로직이 들어있는데 `UniformStickyPartitioner`는 `RoundRobinPartitioner`의 단점을 개선하였다는 점이 다르다. 
+
+`UniformStickyPartitioner`는 프로듀서 동작에 특화되어 높은 처리량과 낮은 리소스 사용률을 가지는 특징이 있다.
+카프카 2.4.0 이전에는 `RoundRobinPartitioner`가 기본 파티셔너로 설정되어 있었다.
+`RoundRobinPartitioner`는 ProducerRecord가 들어오는 대로 파티션을 순회하면서 전송하기 때문에 배치로 묶이는 빈도가 적다.
+`UniformStickyPartitioner`는 어큐뮬레이터에서 데이터가 배치로 모두 묶일 때 까지 기다렸다가 배치로 묶인 데이터는 모두 동일한 파티션에 전송함으로써
+향상된 성능을 가지게 되었다.
+
+> 프로듀서 주요 옵션
+* 필수 옵션:
+  * `bootstrap-server`: 프로듀서가 데이터를 전송할 대상 카프카 클러스터에 속한 브로커의 호스트 이름:포트를 작성한다.
+  2개 이상 브로커 정보를 입력하여 일부 부로커에 이슈가 발생하더라도 접속하는 데에 이슈가 없도록 설정 가능하다.
+  * `key.serializer`: 레코드의 메시지 키를 직렬화하는 클래스를 지정한다.
+  * `value.serializer`: 레코드의 메시지 값을 직렬화하는 클래스를 지정한다.
+* 선택 옵션:
+  * `acks`: 프로듀서가 전송한 데이터가 브로커에 정상적으로 저장되었는지 전송 성공 여부를 확인하는데 사용하는 옵션이다. 0, 1, -1(all)중 하나로 설정할 수 있다.
+  설정값에 따라 데이터의 유실 가능성이 달라진다. 
+    * 1: 기본값. 리더 파티션에 데이터가 저장되면 전송 성공으로 판단.
+    * 0: 프로듀서가 전송한 즉시 브로커에 데이터 저장 여부와 상관없이 성송으로 판단.
+    * -1(all): 토픽의 min.insync.replicas 개수에 해당하는 리더 파티션과 팔로워파티션에 데이터가 저장되면 성공하는 것으로 판단한다.
+  * `buffer.memory`: 브로커로 전송할 데이터를 배치로 모으기 위해 설정할 버퍼 메모리양을 지정한다. 기본값은 33554432(32MB)이다.
+  * `retries`: 프로듀서가 브로커로부터 에러를 받고 난 뒹 재전송을 시도하는 횟수를 지정한다.
+  * `batch.size`: 배치로 전송할 레코드 최대 용량을 지정한다. 너무 작게 설정하면 프로듀서가 브로커로 더 자주 보내기 떄문에 네트워크 부담이 있고 너무 크게 설정하면 메모리를 더 많이 사용하게 되는 점을 주의해야 한다.
+  * `linger.ms`: 배치를 전송하기 전까지 기다리는 최소 시간이다. 기본값은 0이다.
+  * `partitionser.class`: 레코드를 파티션에 전송할 때 적용하는 파티셔너 클래스를 지정한다.
+  * `enable.idempotence`: 멱등성 프로듀서로 동작할지 여부를 설정한다. 기본값은 false
+  * `transactional.id`: 프로듀서가 레코드를 전송할 때 레코드를 트랙잭션 단위로 묶을지 여부를 설정한다. 프로듀서의 고유한 트랜잭션 아이디를 설정할 수 있다. 이 값을 설정하면 트랜잭션 프로듀서로 동작한다. 기본값은 null이다.
+
+> 메시지 키를 가진 데이터를 전송하는 프로듀서
+
+```shell
+public class KeyValueProducer {
+
+    private final static String TOPIC_NAME = "test";
+    private final static String BOOTSTRAP_SERVERS = "my-kafka:9092";
+
+    public static void main(String[] args) {
+        Properties configs = new Properties();
+        configs.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, BOOTSTRAP_SERVERS);
+        // 메시지 키, 메시지 값을 직렬화하기 위한 직렬화 클래스를 선언한다.
+        configs.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        configs.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+
+        KafkaProducer<String, String> producer = new KafkaProducer<>(configs);
+
+        String messageValue = "testMessage";
+        // 카프카 브로커로 데이터를 보내기 위해 ProducerRecord를 생성한다.
+        // 메시지 키는 따로 설정하지 않아 null로 전송된다.
+        ProducerRecord<String, String> record = new ProducerRecord<>(TOPIC_NAME, "kafka", "23");
+
+        // 생성한 ProducerRecord를 전송하기 위해 record를 파라미터로 가지는 send() 메서드를 호출한다.
+        // send()는 즉각적인 전송을 뜻하는 것이 아니라, 파라미터로 들어간 record를 프로듀서 내부에 가지고 있다가 배치 형태로 묶어서 브로커에 전송한다.
+        // 이러한 전송방식을 '배치 전송'이라고 부른다.
+        producer.send(record);
+        log.info("{}", record);
+
+        // flush()를 통해 프로듀서 내부 버퍼에 가지고 있는 레코드 배치를 브로커로 전송한다.
+        producer.flush();
+
+        // 애플리케이션을 종료하기 전에 리소스를 반환한다.
+        producer.close();
+    }
+}
+```
+* 메시지 키가 포함된 레코드를 전송하고 싶다면 ProducerRecord 생성 시 파라미터로 추가해야 한다.
+* 토픽 이름, 메시지 키, 메시지 값을 순서대로 파라미터로 넣고 생성하면 된다.
+
+메시지 키가 지정된 데이터는 `kafka-console-consumer` 명령으로 확인할 수 있다.
+property 옵션의 `print.key.separator` 설정값을 기준으로 나뉘어 한 줄로 출력된다.
+```shell
+bin/kafka-console-consumer.sh --bootstrap-server my-kafka:9092 --topic test --property print.key=true --property key.separator="-" --from-beginning
+```
+```shell
+null-testMessage
+kafka-23
+```
+
 ## 3.5 카프카 스트림즈
 ## 3.6 카프카 커넥트
 
