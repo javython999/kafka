@@ -856,6 +856,253 @@ null-testMessage
 kafka-23
 ```
 
+> 커스텀 파티셔너를 가지는 프로듀서
+
+프로듀서 사용환경에 따라 특정 데이터를 가지는 레코드를 특정 파티션으로 보내야할 때가 있다.
+기본 설정 파티셔너를 사용할 경우 메시지 키의 해시값을 파티션에 매칭하여 데이터를 전송하므로 어느 파티션에 들어가는지 알 수 없다.
+이때 Partitioner 인터페이스를 사용하여 사용자 정의 파티셔너를 생성하면 특정 키에 대해 특정 파티션으로 지정되도록 설정할 수 있다.
+이렇게 지정할 경우 파티션의 개수가 변경 되더라도 특정 키를 가진 데이터는 특정 파티션에 적재되도록 할 수 있다.
+
+```java
+public class CustomPartitioner implements Partitioner {
+    @Override
+    public int partition(String topic, Object key, byte[] keyBytes, Object value, byte[] valueBytes, Cluster cluster) {
+
+        // partition 메서드에는 레코드를 기반으로 파티션을 정하는 로직이 포함된다.
+        // 리턴 값은 주어진 레코드가 들어갈 파티션 번호이다.
+        
+        // 레코드에 메시지 키를 지정하지 않을 경우에는 비정상적인 데이터로 간주하고 InvalidRecordException을 발생시킨다. 
+        if (key == null) {
+            throw new InvalidRecordException("Need message key");
+        }
+
+        // 메시지 키가 specialKey인 경우 파티션 0번이 지정되도록 0을 리턴한다.
+        if ("specialKey".equals(key.toString())) {
+            return 0;
+        }
+
+        // 그 외 키를 가진 레코드는 해시값을 지정하여 특정 파티션에 매칭되도록 한다.
+        List<PartitionInfo> partitions = cluster.partitionsForTopic(topic);
+        int numPartitions = partitions.size();
+        return Utils.toPositive(Utils.murmur2(keyBytes)) % numPartitions;
+    }
+
+    @Override
+    public void close() {
+
+    }
+
+    @Override
+    public void configure(Map<String, ?> map) {
+
+    }
+}
+```
+
+> 브로커 정상 전송 여부를 확인하는 프로듀서
+
+KafkaProducer의 `send()` 메서드는 Future 객체를 반환한다.
+이 객체는 RecordMetadata의 비동기 결과를 표현하는 것으로 ProducerRecord가 카프카 브로커에 정상적으로 적재되었는지에 대한 데이터가 포함되어 있다.
+다음 코드와 같이 `get()` 메서드를 사용하면 프로듀서로 보낸 데이터의 결과를 동기적으로 가져올 수 있다.
+
+```java
+@Slf4j
+public class SyncCallbackProducer {
+
+    private final static String TOPIC_NAME = "test";
+    private final static String BOOTSTRAP_SERVERS = "my-kafka:9092";
+
+    public static void main(String[] args) throws ExecutionException, InterruptedException {
+        Properties configs = new Properties();
+        configs.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, BOOTSTRAP_SERVERS);
+        configs.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        configs.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+
+        KafkaProducer<String, String> producer = new KafkaProducer<>(configs);
+
+        String messageValue = "syncCallbackProducer";
+       ProducerRecord<String, String> record = new ProducerRecord<>(TOPIC_NAME, messageValue);
+
+        RecordMetadata metadata = producer.send(record).get();
+        log.info("{}", metadata);
+
+        producer.flush();
+        producer.close();
+    }
+}
+```
+`send()`의 결과값은 카프카 브로커로부터 응답을 기다렸다가 브로커로부터 응답이 오면 RecordMetadata 인스턴스를 반환한다.
+```shell
+[main] INFO com.errday.kafka.producer.SyncCallbackProducer - test-1@2
+```
+레코드가 정상적으로 적재되었다면 토픽 이름과 파티션 번호, 오프셋 번호가 출력된다.
+위 로그에 따르면 전송한 레코드는 test 토픽의 1번 파티션에 적재되었으며 레코드에 부여된 오프셋 번호는 2번이다.
+
+그러나 동기로 프로듀서의 전송 결과를 확인하는 것은 빠른 전송에 허들이 될 수 있다.
+프로듀서가 전송하고 난 뒹 브로커로부터 전송에 대한 응답 값을 받기 전까지 대기하기 때문이다.
+따라서 이를 원하지 않을 경우를 위해 프로듀서는 비동기로 결과를 확인할 수 있도록 `Callback` 인터페이스를 제공하고 있다.
+사용자는 사용자 정의 `Callback` 클래스를 생성하여 레코드의 전송 결과에 대응하는 로직을 만들 수 있다.
+
+```shell
+@Slf4j
+public class ProducerCallback implements Callback {
+    @Override
+    public void onCompletion(RecordMetadata recordMetadata, Exception e) {
+        if (e != null) {
+            log.error(e.getMessage());
+        } else {
+            log.info(recordMetadata.toString());
+        }
+    }
+}
+```
+`onCompletion` 메서드는 레코드의 비동기 결과를 받기 위해 사용한다.
+
+```shell
+@Slf4j
+public class AsyncCallbackProducer {
+
+    private final static String TOPIC_NAME = "test";
+    private final static String BOOTSTRAP_SERVERS = "my-kafka:9092";
+
+    public static void main(String[] args) {
+        Properties configs = new Properties();
+        configs.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, BOOTSTRAP_SERVERS);
+        configs.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        configs.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+
+        KafkaProducer<String, String> producer = new KafkaProducer<>(configs);
+
+        String messageValue = "syncCallbackProducer";
+        ProducerRecord<String, String> record = new ProducerRecord<>(TOPIC_NAME, messageValue);
+
+        producer.send(record, new ProducerCallback());
+        producer.flush();
+        producer.close();
+    }
+}
+```
+KafkaProducer 인스턴스의 `send()` 메서드 호출 시 ProducerRecord 객체와 함께 Callback 클래스를 넣으면 된다.
+비동기로 결과를 받을 경우 동기로 결과를 받는 경우보다 더 빠른 속도로 데이터를 추가 처리할 수 있다.
+전송하는 데이터의 순서가 중요할 경우 사용하면 안된다. 
+비동기로 결과를 기다리는 동안 다음으로 보낼 데이터의 전송이 성공하고 앞서 보낸 데이터의 결과가 실패할 경우
+재전송으로 인해 데이터 순서가 역전될 수 있기 때문이다.
+
+###  3.4.2 컨슈머  API
+프로듀서로 전송한 데이터는 카프카 브로커에 적재된다.
+컨슈머는 적재된 데이터를 사용하기 위해 브로커로부터 데이터를 가져와서 필요한 처리를 한다.
+
+```shell
+@Slf4j
+public class SimpleConsumer {
+
+    
+    private final static String TOPIC_NAME = "test";
+    private final static String BOOTSTRAP_SERVERS = "my-kafka:9092";
+    private final static String GROUP_ID = "test-group";
+
+    public static void main(String[] args) {
+        Properties configs = new Properties();
+        configs.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, BOOTSTRAP_SERVERS);
+        
+        // 컨슈머 그룹 이름을 선언한다. 컨슈머 그룹을 통해 컨슈머의 목적을 구분할 수 있다.
+        // 컨슈머 그룹을 기준으로 컨슈머 오프셋을 관리하기 때문에 subscribe() 메서드를 사용하여 토픽을 구독하는 경우에는 컨슈머 그룹을 선언해야 한다.
+        // 컨슈머가 중단되거나 재시작되더라도 컨슈머 그룹의 컨슈머 오프셋을 기준으로 이후 데이터를 처리하기 때문이다.
+        // 컨슈머 그룹을 선언하지 않으면 어떤 그룹에도 속하지 않는 컨슈머로 동작하게 된다.
+        configs.put(ConsumerConfig.GROUP_ID_CONFIG, GROUP_ID);
+        
+        // 프로듀서가 직렬화하여 전송한 데이터를 역직렬화하기 위해 역직렬화 클래스를 지정한다.
+        // 프로듀서에서 직렬화한 타입으로 역직렬화해야 한다.
+        configs.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+        configs.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+        
+        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(configs)) {
+            // 컨슈머에게 토픽을 할당하기 위해 subscribe() 메서드를 사용한다.
+            // Collection 타입의 String 값들을 인자로 받는다.
+            consumer.subscribe(List.of(TOPIC_NAME));
+            
+            while (true) {
+                // 컨슈머는 poll() 메서드를 호출하여 데이터를 가져와서 처리한다.
+                // 지속적으로 데이터를 처리하기 위해 반복 호출을 해야 한다.
+                ConsumerRecords<String, String> records = consumer.poll(Duration.ofSeconds(1));
+
+                // 컨슈머는 poll() 메서드를 통해 ConsumerRecord 리스트를 반환한다. poll() 메서드는 Duration 타입을 인자로 받는다.
+                // 이 인자값은 브로커로부터 데이터를 가져올 때 컨슈머 버퍼에 데이터를 기다리기 위한 타임아웃 간격을 의미한다.
+                for (ConsumerRecord<String, String> record : records) {
+                    log.info("{}", record);
+                }
+            }
+        }
+
+    }
+}
+```
+```shell
+[main] INFO com.errday.kafka.consumer.SimpleConsumer - ConsumerRecord(topic = test, partition = 0, leaderEpoch = 0, offset = 0, CreateTime = 1736855392697, serialized key size = -1, serialized value size = 20, headers = RecordHeaders(headers = [], isReadOnly = false), key = null, value = syncCallbackProducer)
+```
+토픽으로부터 데이터를 polling 하여 로그를 출력했다.
+가져온 레코드의 파티션 번호, 오프셋, 레코드가 브로커에 들어간 날짜, 메시지 키, 메시지 값을 확인할 수 있다.
+
+> 컨슈머 중요 개념
+
+토픽의 파티션으로부터 데이터를 가져가기 위해 컨슈머를 운영하는 방법은 크게 2가지가 있다.
+1. 1개 이상의 컨슈머로 이루어진 컨슈머 그룹을 운영
+2. 토픽의 특정 파티션만 구독하는 컨슈머를 운영
+
+컨슈머 그룹으로 운영하는 방법은 컨슈머를 각 컨슈머 그룹으로부터 격리된 환경에서 안전하게 운영할 수 있도록 도와주는 카프카의 독특한 방식이다.
+컨슈머 그룹으로 묶인 컨슈머들은 토픽의 1개 이상 파티션들에 할당되어 데이터를 가져갈 수 있다.
+컨슈머 그룹으로 묶인 컨슈머가 토픽을 구독해서 데이터를 가져갈 때, 1개의 파티션은 1개의 컨슈머에 할당 가능하다.
+그리고 1개 컨슈머는 여러 개의 파티션에 할당 될 수 있다.
+이러한 특징으로 컨슈머 그룹의 컨슈머 개수는 가져가고자 하는 토픽의 파티션 개수보다 같거나 작아야 한다.
+
+예를 들어, 3개의 파티션을 가진 토픽을 효과적으로 처리하기 위해서는 3개 이하의 컨슈머로 이루어진 컨슈머 그룹을 운영해야 한다.
+만약 4개의 컨슈머로 이루어진 컨슈머 그룹을 운영할 경우 파티션을 할당 받지 못한 1개의 컨슈머는 유휴 상태로 남아 스레드만 차지하고
+실질적인 데이터를 처리하지 못한다.
+
+컨슈머 그룹은 다른 컨슈머 그룹과 격리되는 특징을 가지고 있다.
+프로듀서가 보낸 데이터를 각기 다른 역할을 하는 컨슈머 그룹끼리 영향을 받지 않게 처리할 수 있다는 장점을 가진다.
+
+컨슈머 그룹에 장애가 발생하면 어떻게 될까? 
+컨슈머 그룹으로 이루어진 컨슈머들 중 일부 컨슈머에 장애가 발생하면,
+장애가 발생한 컨슈머에 할당된 파티션은 장애가 발생하지 않은 컨슈머에 소유권이 넘어간다.
+이러한 과정을 리밸런싱이라고 부른다.
+리밸런싱은 두 가지 상황에서 일어난다.
+
+1. 컨슈머가 추가되는 상황
+2. 컨슈머가 제외되는 상황
+
+리밸런싱은 컨슈머가 데이터를 처리하는 도중에 언제든지 발생할 수 있으므로 데이터 처리중 발생한 리밸런싱에 대응하는 코드를 작성해야 한다.
+가용성을 높이면서도 안정적인 운영을 도와주는 리밸런싱은 유용하지만 자주 일어나서는 안 된다.
+파티션의 소유권을 컨슈머로 재할당하는 과정에서 해당 컨슈머 그룹의 컨슈머들이 토픽의 데이터를 읽을 수 없기 때문이다.
+
+그룹 조정자는 리밸런싱을 발동시키는 역할을 하는데 컨슈머 그룹의 컨슈머가 추가되고 삭제될 때를 감지한다.
+카프카 브로커 중 한 대가 그 그룹 조정자의 역할을 수행한다.
+
+컨슈머는 카프카 브로커로부터 데이터를 어디까지 가져갔는지 커밋을 통해 기록한다.
+특정 토픽의 파티션을 어떤 컨슈머 그룹이 몇 번째 가져갔는지 카프카 브로커 내부에서 사용되는 내부 토픽(__consumer_offsets)에 기록된다.
+컨슈머 동작 이슈가 발생하여 __consumer_offsets 토픽에 어느 레코드까지 읽어갔는지 오프셋 커밋이 기록되지 못했다면
+데이터 처리의 중복이 발생할 수 있다.
+그러므로 데이터 처리의 중복이 발생하지 않게 하기 위해서는 컨슈머 애플리케이션이 오프셋 커밋을 정상적으로 처리했는지 검증해야만 한다.
+
+오프셋 커밋은 컨슈머 애플리케이션에서 명시적, 비명시적으로 수행할 수 있다.
+기본 옵션은 poll() 메서드가 수행될 때 일정 간격마다 오프셋을 커밋하도록 `enable.auto.commit=true`로 설정되어 있다.
+이렇게 일정 간격마다 자동으로 커밋되는 것을 비명시 '오프셋 커밋'이라고 부른다.
+이 옵셧은 `auto.commit.interval.ms`에 설정된 값과 함꼐 사용되는데, poll() 메서드가 `auto.commit.interval.ms`에 설정된 값 이상이 지났을때
+그 시점까지 읽은 레코드의 오프셋을 커밋한다.
+poll() 메서드를 호출할 때 커밋을 수행하므로 코드상에서 따로 커밋 관련 코드를 작성할 필요가 없다.
+비명시 오프셋 커밋은 편리하지만 poll() 메서드 호출 이후에 리밸런싱 또는 컨슈머가 강제종료 발생 시 컨슈머가 처리하는 데이터가 중복 또는 유실될 수 있는 가능성이 있는
+취약한 구조를 가진다. 그러므로 데이터 중복이나 유실을 허용하지 않는 서비스라면 자동 커밋을 사용해서는 안된다.
+
+명시적으로 오프셋을 커밋하려면 poll() 메서드를 호출 이후에 반환 받은 데이터가 처리 완료되고 `commitSync()` 메서드를 호출하면 된다.
+`commitSync()` 메서드는 poll() 메서드를 통해 반환된 레코드의 가장 마지막 오프셋을 기준으로 커밋을 수행한다.
+`commiySync()` 메서드는 브로커에 커밋을 요청하고 커밋이 정상적으로 처리되었는지 응답까지 기다리는데
+이는 컨슈머의 처리량에 영향을 끼친다.
+데이터 처리 시간에 비해 커밋 요청 및 응답에 시간이 오래 걸린다면 동일 시간당 데이터 처리량이 줄어들게 된다.
+이를 해결하기 위해 `commitAsync()` 메서드를 사용하여 커밋 요청을 전송하고 응답이 오기 전까지 데이터 처리를 수행할 수 있다.
+하지만 비동기 커밋은 커밋 요청이 실패했을 경우 현재 처리중인 데이터의 순서를 보장하지 않으며 데이터의 중복처리가 발생할 수 있다.
+
+
+
 ## 3.5 카프카 스트림즈
 ## 3.6 카프카 커넥트
 
