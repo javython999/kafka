@@ -1101,6 +1101,444 @@ poll() 메서드를 호출할 때 커밋을 수행하므로 코드상에서 따�
 이를 해결하기 위해 `commitAsync()` 메서드를 사용하여 커밋 요청을 전송하고 응답이 오기 전까지 데이터 처리를 수행할 수 있다.
 하지만 비동기 커밋은 커밋 요청이 실패했을 경우 현재 처리중인 데이터의 순서를 보장하지 않으며 데이터의 중복처리가 발생할 수 있다.
 
+> 컨슈머 주요 옵션
+* 필수 옵션:
+  * `bootstrap.servers`: 프로듀서가 데이터를 전송할 대상 카프카 클러스터에 속한 브로커의 호스트 이름:포트를 1개이상 작성한다.
+  * `key.deserializer`: 레코드의 메시지 키를 역직렬화하는 클래스를 지정한다.
+  * `value.deserializer`: 레코드의 메시지 값을 역직렬화하는 클래스를 지정한다.
+* 선택 옵션
+  * `group.id`: 컨슈머 그룹 아이디를 지정한다. subscribe() 메서드로 토픽을 구독하여 사용할 때는 이 옵션을 필수로 넣어야 한다. 기본값은 null이다.
+  * `auto.offset.reset`: 컨슈머 그룹이 특정 파티션을 읽을 때 저장된 컨슈머 오프셋이 없는 경우 어느 오프셋부터 읽을지 선택하는 옵션이다.
+  이미 컨슈머 오프셋이 있다면 이 옵션 값은 무시된다. 이 옵션은 `latest`, `earliest`, `none` 중 1개를 설정할 수 있다. 기본값은 `latest`이다.
+    * `latest`: 가장 높은 오프셋(가장 최근에 넣은)부터 읽기 시작한다.
+    * `earliest`: 가장 낮은 오프셋(가장 오래전에 넣은)부터 읽기 시작한다.
+    * `none`: 컨슈머 그룹이 커밋한 기록이 있는지 찾아본다. 만약 기록이 없으면 오류를 반환하고, 커밋 기록이 있다면 기존 커밋 기록 이후 오프셋부터 읽기 시작한다.
+  * `enable.auto.commit`: 자동 커밋으로 할지 수동 커밋으로 할지 선택한다. 기본값은 true이다.
+  * `auto.commit.interval.ms`: 자동 커밋(enable.auto.commit)일 경우 오프셋 커밋 간격을 지정한다. 기본값은 5000(5초)이다.
+  * `max.poll.records`: poll() 메서드를 통해 반환되는 레코드 개수를 지정한다. 기본값은 500이다.
+  * `session.timeout.ms`: 컨슈머가 브로커와 연결이 끊기는 최대 시간이다. 이 시간내에 하트비트를 전송하지 않으면 브로커는 컨슈머에 이슈가 발생했다고 가정하고 리밸런싱을 시작한다.
+  보통 하트비트 시간 간격의 3배로 설정한다. 기본값은 10000(10초)이다.
+  * `heartbeat.interval.ms`: 하트비트를 전송하는 시간 간격이다. 기본값은 3000(3초)이다.
+  * `max.poll.interval.ms`: poll() 메서드를 호출하는 간격의 최대 시간을 지정한다. poll() 메서드를 호출한 이후에 데이터를 처리하는 데에 시간이 너무 많이 걸리는 겨웅 비정상으로 판단하고 리밸런싱을 시작한다. 기본값은 300000(5분)이다.
+  * `isolation.level`: 트랜잭션 프로듀서가 레코드를 트랜잭션 단위로 보낼 경우 사용한다. 기본값은 read_uncommited이다.
+    * `read_committed`: 커밋이 완료된 레코드만 읽는다.
+    * `read_uncommited`: 커밋 여부와 관계없이 파티션에 있는 모든 레코드를 읽는다.
+
+> 동기 오프셋 커밋
+
+```java
+@Slf4j
+public class SyncCommitConsumer {
+
+
+    private final static String TOPIC_NAME = "test";
+    private final static String BOOTSTRAP_SERVERS = "my-kafka:9092";
+    private final static String GROUP_ID = "test-group";
+
+    public static void main(String[] args) {
+        Properties configs = new Properties();
+        configs.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, BOOTSTRAP_SERVERS);
+
+        // 컨슈머 그룹 이름을 선언한다. 컨슈머 그룹을 통해 컨슈머의 목적을 구분할 수 있다.
+        // 컨슈머 그룹을 기준으로 컨슈머 오프셋을 관리하기 때문에 subscribe() 메서드를 사용하여 토픽을 구독하는 경우에는 컨슈머 그룹을 선언해야 한다.
+        // 컨슈머가 중단되거나 재시작되더라도 컨슈머 그룹의 컨슈머 오프셋을 기준으로 이후 데이터를 처리하기 때문이다.
+        // 컨슈머 그룹을 선언하지 않으면 어떤 그룹에도 속하지 않는 컨슈머로 동작하게 된다.
+        configs.put(ConsumerConfig.GROUP_ID_CONFIG, GROUP_ID);
+
+        // 프로듀서가 직렬화하여 전송한 데이터를 역직렬화하기 위해 역직렬화 클래스를 지정한다.
+        // 프로듀서에서 직렬화한 타입으로 역직렬화해야 한다.
+        configs.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+        configs.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+
+        // 동기 오프셋 커밋으로 설정
+        configs.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
+
+        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(configs)) {
+            // 컨슈머에게 토픽을 할당하기 위해 subscribe() 메서드를 사용한다.
+            // Collection 타입의 String 값들을 인자로 받는다.
+            consumer.subscribe(List.of(TOPIC_NAME));
+
+            while (true) {
+                // 컨슈머는 poll() 메서드를 호출하여 데이터를 가져와서 처리한다.
+                // 지속적으로 데이터를 처리하기 위해 반복 호출을 해야 한다.
+                ConsumerRecords<String, String> records = consumer.poll(Duration.ofSeconds(1));
+
+                // 컨슈머는 poll() 메서드를 통해 ConsumerRecord 리스트를 반환한다. poll() 메서드는 Duration 타입을 인자로 받는다.
+                // 이 인자값은 브로커로부터 데이터를 가져올 때 컨슈머 버퍼에 데이터를 기다리기 위한 타임아웃 간격을 의미한다.
+                for (ConsumerRecord<String, String> record : records) {
+                    log.info("record:{}", record);
+                }
+                // poll() 메서드로 받은 가장 마지막 레코드의 오프셋을 기준으로 커밋한다.
+                consumer.commitSync();
+            }
+        }
+
+    }
+}
+```
+poll() 메서드가 호출된 이후에 commitSync() 메서드를 호출하여 오프셋 커밋을 명시적으로 수행할 수 있다.
+그렇기 때문에 동기 오프셋 커밋을 사용할 경우에는 poll() 메서드로 받은 모든 레코드의 처리가 끝난 이후 commitSync() 메서드를 호출해야 한다.
+동기 커밋의 경우 브로커로 커밋을 요청하고 커밋이 완료될 때까지 기다린다.
+브로커로부터 컨슈머 오프셋 커밋이 완료되었음을 받기전까지 컨슈머는 데이터를 처리하지 않고 기다리기 때문에 자동 커밋이나 비동기 오프셋 커밋보다 
+동일 시간당 데이터 처리량이 적다는 특징이 있다.
+
+commitSync()에 파라미터가 들어가지 않으면 poll()로 반환된 가장 마지막 레코드의 오프셋을 기준으로 커밋된다.
+개별 레코드 단위로 매번 오프셋을 커밋하고 싶다면 commitSync() 메서드에 Map<TopicPartition, OffsetAndMetadata> 인스턴스를 파라미터로 넣으면 된다.
+
+```java
+@Slf4j
+public class SyncCommitConsumer {
+
+  private final static String TOPIC_NAME = "test";
+  private final static String BOOTSTRAP_SERVERS = "my-kafka:9092";
+  private final static String GROUP_ID = "test-group";
+
+  public static void main(String[] args) {
+    Properties configs = new Properties();
+    configs.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, BOOTSTRAP_SERVERS);
+    configs.put(ConsumerConfig.GROUP_ID_CONFIG, GROUP_ID);
+    configs.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+    configs.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+    configs.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
+
+    try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(configs)) {
+      consumer.subscribe(List.of(TOPIC_NAME));
+
+      while (true) {
+        ConsumerRecords<String, String> records = consumer.poll(Duration.ofSeconds(1));
+        HashMap<TopicPartition, OffsetAndMetadata> currentOffset = new HashMap<>();
+
+        for (ConsumerRecord<String, String> record : records) {
+          log.info("record:{}", record);
+          currentOffset.put(new TopicPartition(record.topic(), record.partition()), new OffsetAndMetadata(record.offset() + 1));
+          consumer.commitSync(currentOffset);
+        }
+      }
+    }
+  }
+}
+```
+> 비동기 오프셋 커밋
+
+동기 오프셋 커밋을 사용할 경우 커밋 응답을 기다리는 동안 데이터 처리가 일시적으로 중단된다.
+더 많은 데이터를 처리하기 위해서 비동기 오프셋 커밋을 사용할 수 있다.
+비동기 오프셋 커밋은 commitAsync() 메서드를 호출하여 사용할 수 있다.
+
+```java
+@Slf4j
+public class AsyncCommitConsumer {
+
+
+    private final static String TOPIC_NAME = "test";
+    private final static String BOOTSTRAP_SERVERS = "my-kafka:9092";
+    private final static String GROUP_ID = "test-group";
+
+    public static void main(String[] args) {
+        Properties configs = new Properties();
+        configs.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, BOOTSTRAP_SERVERS);
+        configs.put(ConsumerConfig.GROUP_ID_CONFIG, GROUP_ID);
+        configs.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+        configs.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+        configs.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
+
+        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(configs)) {
+            consumer.subscribe(List.of(TOPIC_NAME));
+
+            while (true) {
+                ConsumerRecords<String, String> records = consumer.poll(Duration.ofSeconds(1));
+
+                for (ConsumerRecord<String, String> record : records) {
+                    log.info("record:{}", record);
+                }
+                consumer.commitAsync();
+            }
+        }
+    }
+}
+```
+비동기 오프셋 커밋도 동기 커밋과 마찬가지로 poll() 메서드로 리턴된 가장 마지막 레코드를 기준으로 오프셋을 커밋한다.
+다만 동기 오프셋 커밋처럼 응답을 기다리지 않는다. 비동기 오프셋 커밋을 사용할 경우 커밋 응답을 받기 때문에 callback 함수를 파라미터로 받아서 결과를 얻을 수 있다.
+
+```java
+@Slf4j
+public class AsyncCommitCallbackConsumer {
+
+
+    private final static String TOPIC_NAME = "test";
+    private final static String BOOTSTRAP_SERVERS = "my-kafka:9092";
+    private final static String GROUP_ID = "test-group";
+
+    public static void main(String[] args) {
+        Properties configs = new Properties();
+        configs.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, BOOTSTRAP_SERVERS);
+        configs.put(ConsumerConfig.GROUP_ID_CONFIG, GROUP_ID);
+        configs.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+        configs.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+        configs.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
+
+        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(configs)) {
+            consumer.subscribe(List.of(TOPIC_NAME));
+
+            while (true) {
+                ConsumerRecords<String, String> records = consumer.poll(Duration.ofSeconds(1));
+
+                for (ConsumerRecord<String, String> record : records) {
+                    log.info("record:{}", record);
+                }
+
+                consumer.commitAsync(
+                        (map, e) -> {
+                            if (e != null) {
+                                log.error("Commit failed");
+                                log.error(e.getMessage(), e);
+                            } else {
+                                log.info("commit success");
+                            }
+                        }
+                );
+            }
+        }
+    }
+}
+```
+OffsetCommitCallback 함수는 commitAsync()의 응답을 받을 수 있도록 도와주는 콜백 인터페이스다.
+비동기로 받은 커밋 응답은 onComplete() 메서드를 통해 확인할 수 있다.
+정상적으로 커밋되었다면 Exception 변수는 null이고, 커밋이 완료된 오프셋 정보가 Map<TopicPartition, OffsetAndMetadata>에 포함되어 있다.
+만약 커밋이 실패했다면 Exception 변수에 에러값이 포함되어 있으므로 어떠한 이유로 커밋이 실패했는지 확인할 수 있다.
+
+> 리밸런스 리스너를 가진 컨슈머
+
+컨슈머 그룹에서 컨슈머가 추가 또는 제거되면 파티션을 컨슈머에 재할당하는 과정인 리밸런스가 일어난다.
+poll() 메서드를 통해 반환받은 데이터를 모두 처리하기 전에 리밸런스가 발생하면 데이터를 중복 처리할 수 있다.
+poll() 메서드를 통해 받은 데이터 중 일부를 처리했으나 커밋하지 않았기 때문이다.
+
+리밸런스 발생 시 데이터를 중복 처리하지 않게 하기 위해서는 리밸런스 발생 시 처리한 데이터를 기준으로 커밋을 시도해야 한다.
+리밸런스 발생을 감지하기 위해 카프카 라이브러리는 ConsumerRebalanceListener 인터페이스를 지원한다.
+ConsumerRebalanceListener 인터페이스로 구현된 클래스는 onPartitionAssigned() 메서드와 onPartitionRevoked() 메서드로 이루어져 있다.
+
+* `onPartitionAssigned()`: 리밸런스가 끝난 뒤에 파티션이 할당 완료되면 호출되는 메서드이다.
+* `onPartitionRevoked()`: 리밸런스가 시작되기 직전에 호출되는 메서드이다.
+
+리밸런스가 시작하기 직전에 커밋을 하면 되므로 `onPartitionRevoked()` 메서드에 커밋을 구현하여 처리할 수 있다.
+
+```java
+@Slf4j
+public class RebalanceListenerConsumer {
+
+
+    private final static String TOPIC_NAME = "test";
+    private final static String BOOTSTRAP_SERVERS = "my-kafka:9092";
+    private final static String GROUP_ID = "test-group";
+    private static KafkaConsumer<String, String> consumer;
+    private static HashMap<TopicPartition, OffsetAndMetadata> currentOffset = new HashMap<>();
+
+    public static void main(String[] args) {
+        Properties configs = new Properties();
+        configs.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, BOOTSTRAP_SERVERS);
+
+        // 컨슈머 그룹 이름을 선언한다. 컨슈머 그룹을 통해 컨슈머의 목적을 구분할 수 있다.
+        // 컨슈머 그룹을 기준으로 컨슈머 오프셋을 관리하기 때문에 subscribe() 메서드를 사용하여 토픽을 구독하는 경우에는 컨슈머 그룹을 선언해야 한다.
+        // 컨슈머가 중단되거나 재시작되더라도 컨슈머 그룹의 컨슈머 오프셋을 기준으로 이후 데이터를 처리하기 때문이다.
+        // 컨슈머 그룹을 선언하지 않으면 어떤 그룹에도 속하지 않는 컨슈머로 동작하게 된다.
+        configs.put(ConsumerConfig.GROUP_ID_CONFIG, GROUP_ID);
+
+        // 프로듀서가 직렬화하여 전송한 데이터를 역직렬화하기 위해 역직렬화 클래스를 지정한다.
+        // 프로듀서에서 직렬화한 타입으로 역직렬화해야 한다.
+        configs.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+        configs.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+
+        // 명시적으로 오프셋 커밋을 수행할 때는 ENABLE_AUTO_COMMIT_CONFIG을 false로 설정한다.
+        configs.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
+
+        consumer = new KafkaConsumer<>(configs);
+        // 컨슈머에게 토픽을 할당하기 위해 subscribe() 메서드를 사용한다.
+        // Collection 타입의 String 값들을 인자로 받는다.
+        // RebalanceListner를 오버라이드 변수로 포함시킨다.
+        consumer.subscribe(List.of(TOPIC_NAME), new RebalanceListener());
+
+        while (true) {
+            // 컨슈머는 poll() 메서드를 호출하여 데이터를 가져와서 처리한다.
+            // 지속적으로 데이터를 처리하기 위해 반복 호출을 해야 한다.
+            ConsumerRecords<String, String> records = consumer.poll(Duration.ofSeconds(1));
+
+            // 현재 처리한 오프셋을 매번 커밋하기 위해 commitSync() 메서드가 파라미터로 받을 HashMap 타입을 선언한다.
+            // 키는 토픽과 파티션 정보가 담긴 TopicPartition 클래스가 되고
+            // 값은 오프셋 정보가 담긴 OffsetAndMetadata 클래스가 된다.
+
+
+            // 컨슈머는 poll() 메서드를 통해 ConsumerRecord 리스트를 반환한다. poll() 메서드는 Duration 타입을 인자로 받는다.
+            // 이 인자값은 브로커로부터 데이터를 가져올 때 컨슈머 버퍼에 데이터를 기다리기 위한 타임아웃 간격을 의미한다.
+            for (ConsumerRecord<String, String> record : records) {
+                log.info("record:{}", record);
+
+                // 처리를 완료한 레코드의 정보를 토대로 키, 값을 설정한다.
+                // 이때 주의할 점은 현재 처리한 오프셋에 1을 더한 값을 커밋해야 한다는 점이다.
+                // 이후에 컨슈머가 poll()을 수행할 때 마지막으로 커밋한 오프셋부터 레코드를 리턴하기 때문이다.
+                currentOffset.put(new TopicPartition(record.topic(), record.partition()), new OffsetAndMetadata(record.offset() + 1));
+                consumer.commitSync(currentOffset);
+            }
+        }
+
+    }
+
+    private static class RebalanceListener  implements ConsumerRebalanceListener {
+        @Override
+        public void onPartitionsRevoked(Collection<TopicPartition> collection) {
+            log.warn("onPartitionsRevoked");
+            // 리밸런스가 발생하면 가장 마지막으로 처리 완료한 레코드를 기준으로 커밋을 실시한다.
+            // 이를 통해 데이터 처리의 중복을 방지할 수 있다.
+            consumer.commitSync(currentOffset);
+        }
+
+        @Override
+        public void onPartitionsAssigned(Collection<TopicPartition> collection) {
+            log.warn("onPartitionsAssigned");
+        }
+    }
+
+}
+```
+> 파티션 할당 컨슈머
+
+컨슈머를 운영할 때 subscribe() 메서드를 사용하여 구독 형태로 사용하는 것 외에도 직접 파티션을 컨슈머에 명시적으로 할당하여 운영할 수도 있다.
+컨슈머가 어떤 토픽, 파티션을 할당할지 명시적으로 선언할 때는 assign() 메서드를 사용하면 된다.
+assign() 메서드는 다수의 TopicPartition 인스턴스를 지닌 자바 컬렉션 타입을 파라미터로 받는다.
+TopicPartition 클래스가 카프카 라이브러리 내/외부에서 사용되는 토픽, 파티션의 정보를 담는 객체로 사용된다.
+
+```java
+@Slf4j
+public class ExactConsumer {
+
+    private final static String TOPIC_NAME = "test";
+    private final static String BOOTSTRAP_SERVERS = "my-kafka:9092";
+    private final static String GROUP_ID = "test-group";
+    private final static int PARTITION_NUMBER = 0;
+
+    public static void main(String[] args) {
+        Properties configs = new Properties();
+        configs.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, BOOTSTRAP_SERVERS);
+
+        // 컨슈머 그룹 이름을 선언한다. 컨슈머 그룹을 통해 컨슈머의 목적을 구분할 수 있다.
+        // 컨슈머 그룹을 기준으로 컨슈머 오프셋을 관리하기 때문에 subscribe() 메서드를 사용하여 토픽을 구독하는 경우에는 컨슈머 그룹을 선언해야 한다.
+        // 컨슈머가 중단되거나 재시작되더라도 컨슈머 그룹의 컨슈머 오프셋을 기준으로 이후 데이터를 처리하기 때문이다.
+        // 컨슈머 그룹을 선언하지 않으면 어떤 그룹에도 속하지 않는 컨슈머로 동작하게 된다.
+        configs.put(ConsumerConfig.GROUP_ID_CONFIG, GROUP_ID);
+
+        // 프로듀서가 직렬화하여 전송한 데이터를 역직렬화하기 위해 역직렬화 클래스를 지정한다.
+        // 프로듀서에서 직렬화한 타입으로 역직렬화해야 한다.
+        configs.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+        configs.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+
+        KafkaConsumer<String, String> consumer = new KafkaConsumer<>(configs);
+        // subscribe() 대신 assign() 메서드를 사용한다.
+        // test 토픽의 0번 파티션을 할당하여 레코드를 가져오는 설정이 적용된다.
+        // subscribe() 메서드를 사용할 때와 다르게 직접 컨슈머가 특정 토픽, 특정 파티션에 할당되므로 리밸런싱하는 과정이 없다.
+        consumer.assign(Collections.singleton(new TopicPartition(TOPIC_NAME, PARTITION_NUMBER)));
+
+        // 컨슈머에게 토픽을 할당하기 위해 subscribe() 메서드를 사용한다.
+        // Collection 타입의 String 값들을 인자로 받는다.
+        consumer.subscribe(List.of(TOPIC_NAME));
+
+        while (true) {
+            // 컨슈머는 poll() 메서드를 호출하여 데이터를 가져와서 처리한다.
+            // 지속적으로 데이터를 처리하기 위해 반복 호출을 해야 한다.
+            ConsumerRecords<String, String> records = consumer.poll(Duration.ofSeconds(1));
+
+            // 컨슈머는 poll() 메서드를 통해 ConsumerRecord 리스트를 반환한다. poll() 메서드는 Duration 타입을 인자로 받는다.
+            // 이 인자값은 브로커로부터 데이터를 가져올 때 컨슈머 버퍼에 데이터를 기다리기 위한 타임아웃 간격을 의미한다.
+            for (ConsumerRecord<String, String> record : records) {
+                log.info("{}", record);
+            }
+        }
+    }
+}
+```
+
+> 컨슈머에 할당된 파티션 확인 방법
+
+컨슈머에 할당된 토픽과 파티션에 대한 정보는 `assignment()` 메서드로 확인할 수 있다.
+`assignment()` 메서드는 Set<TopicPartition> 인스턴스를 반환한다. TopicPartition 클래스는 토픽 이름과 파티션 번호가 포함된 객체이다.
+
+```java
+KafkaConsumer<String, String> consumer = new KafkaConsumer<>(configs);
+consumer.subscribe(List.of(TOPIC_NAME));
+Set<TopicPartition> assignedTopicPartition = consumer.assignment();
+```
+
+> 컨슈머의 안전한 종료
+
+컨슈머의 안전한 종료
+컨슈머 애플리케이션은 안전하게 종료되어야 한다.
+정상적으로 종료되지 않은 컨슈머는 세션 타임아웃이 발생할때까지 컨슈머 그룹에 남게 된다.
+
+이로 인해 실제로는 종료되었지만 더는 동작하지 않는 컨슈머가 존재하기 때문에 파티션의 데이터는 소모되지 못하고 컨슈머 랙이 늘어나게 된다.
+컨슈머 랙이 늘어나면 데이터 처리 지연이 발생하게 된다.
+
+컨슈머를 안전하게 종료하기 위해 KafkaConsumer 클래스는 `wakeup()` 메서드를 지원한다.
+`wakeup()` 메서드를 실행하여 kafkaConsumer 인스턴스를 안전하게 종료할 수 있다.
+`wakeup()` 메서드가 실행된 이후 poll() 메서드가 호출되면 WakeupException 예외가 발생한다.
+WakeupException 예외를 받은 뒤에는 데이터 처리를 위해 사용한 자원들을 해제하면 된다.
+마지막에는 close() 메서드를 호출하여 카프카 클러스터에 컨슈머가 안전하게 종료되었음을 명시적으로 알려주면 종료가 완료되었다고 볼 수 있다.
+close() 메서드를 호출하면 해당 컨슈머는 더이상 동작하지 않는다.
+명시적으로 알려주었으므로 컨슈머 그룹에서 이탈되고 나머지 컨슈머들이 파티션을 할당받게 된다.
+
+```java
+@Slf4j
+public class SyncOffsetCommitShutdownHook {
+
+
+  private final static String TOPIC_NAME = "test";
+  private final static String BOOTSTRAP_SERVERS = "my-kafka:9092";
+  private final static String GROUP_ID = "test-group";
+  private static KafkaConsumer<String, String> consumer;
+
+  public static void main(String[] args) {
+    Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+      log.info("Shutting down...");
+      consumer.wakeup();
+    }));
+
+    Properties configs = new Properties();
+    configs.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, BOOTSTRAP_SERVERS);
+
+    // 컨슈머 그룹 이름을 선언한다. 컨슈머 그룹을 통해 컨슈머의 목적을 구분할 수 있다.
+    // 컨슈머 그룹을 기준으로 컨슈머 오프셋을 관리하기 때문에 subscribe() 메서드를 사용하여 토픽을 구독하는 경우에는 컨슈머 그룹을 선언해야 한다.
+    // 컨슈머가 중단되거나 재시작되더라도 컨슈머 그룹의 컨슈머 오프셋을 기준으로 이후 데이터를 처리하기 때문이다.
+    // 컨슈머 그룹을 선언하지 않으면 어떤 그룹에도 속하지 않는 컨슈머로 동작하게 된다.
+    configs.put(ConsumerConfig.GROUP_ID_CONFIG, GROUP_ID);
+
+    // 프로듀서가 직렬화하여 전송한 데이터를 역직렬화하기 위해 역직렬화 클래스를 지정한다.
+    // 프로듀서에서 직렬화한 타입으로 역직렬화해야 한다.
+    configs.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+    configs.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+
+    consumer = new KafkaConsumer<>(configs);
+    try {
+      // 컨슈머에게 토픽을 할당하기 위해 subscribe() 메서드를 사용한다.
+      // Collection 타입의 String 값들을 인자로 받는다.
+      consumer.subscribe(List.of(TOPIC_NAME));
+
+      while (true) {
+        // 컨슈머는 poll() 메서드를 호출하여 데이터를 가져와서 처리한다.
+        // 지속적으로 데이터를 처리하기 위해 반복 호출을 해야 한다.
+        ConsumerRecords<String, String> records = consumer.poll(Duration.ofSeconds(1));
+
+        // 컨슈머는 poll() 메서드를 통해 ConsumerRecord 리스트를 반환한다. poll() 메서드는 Duration 타입을 인자로 받는다.
+        // 이 인자값은 브로커로부터 데이터를 가져올 때 컨슈머 버퍼에 데이터를 기다리기 위한 타임아웃 간격을 의미한다.
+        for (ConsumerRecord<String, String> record : records) {
+          log.info("{}", record);
+        }
+      }
+    } catch (Exception e) {
+      log.warn("Wakeup consumer");
+      log.error(e.getMessage(), e);
+    } finally {
+      consumer.close();
+    }
+  }
+}
+```
+
 
 
 ## 3.5 카프카 스트림즈
