@@ -1539,9 +1539,98 @@ public class SyncOffsetCommitShutdownHook {
 }
 ```
 
+### 3.4.3 어드민 API
+카프카 클라이언트는 내부 옵션들을 설정하거나 조회하기 위해 `AdminClient` 클래스를 제공한다.
+AdminClient 클래스를 활용하면 클러스터의 옵션과 관련된 부분을 자동화할 수 있다.
 
+KafkaAdminClient 주요 메서드
+* describeCluster(DescribeClusterOptions options): 브로커 정보조회
+* listTopics(ListTopicsOptions options): 토픽 리스트 조회
+* listConsumerGroup(ListConsumerGroupsOptions options): 컨슈머 그룹 조회
+* createTopics(Collection<NewTopic> newTopics, CreateTopicsOption options): 신규 토픽 생성
+* createAcls(Collection<AclBinding> acls, CreateAclsOptions options): 접근 제어 규칙 생성
+
+```java
+@Slf4j
+public class KafkaAdminClient {
+
+    private final static String BOOTSTRAP_SERVERS = "my-kafka:9092";
+
+    public static void main(String[] args) throws ExecutionException, InterruptedException {
+
+        // 프로듀서  API 또는 컨슈머 API와 다르게 추가 설정 없이 클러스터 정보에 대한 설정만 하면 된다.
+        Properties configs = new Properties();
+        configs.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, BOOTSTRAP_SERVERS);
+
+        // create()로 생성한다.
+        try (AdminClient adminClient = AdminClient.create(configs)) {
+
+            // 브로커 정보 조회
+            log.info("== Get broker information ==");
+            for (Node node : adminClient.describeCluster().nodes().get()) {
+                log.info("node: {}", node);
+
+                ConfigResource configResource = new ConfigResource(ConfigResource.Type.BROKER, node.idString());
+                DescribeConfigsResult describeConfigs = adminClient.describeConfigs(Collections.singleton(configResource));
+                describeConfigs.all()
+                        .get()
+                        .forEach((broker, config) -> {
+                            config.entries().forEach(entry -> {
+                                log.info("{} = {}", entry.name(), entry.value());
+                            });
+                        });
+            }
+
+            // 토픽 정보 조회
+            Map<String, TopicDescription> topicInformation = adminClient.describeTopics(Collections.singleton("test")).all().get();
+            log.info("== Topic information ==");
+            log.info("{}", topicInformation);
+        }
+
+    }
+}
+```
+어드민 API를 활용할 때 클러스터의 버전과 클라이언트의 버전을 맞춰서 사용해야 한다. 어드민 API의 많은 부분이 버전이 올라가면서 자주 바뀌기 때문이다.
 
 ## 3.5 카프카 스트림즈
+카프카 스트림즈는 토픽에 적재된 데이터를 상태기반 또는 비상태기반으로 실시간 변환하여 다른 토픽에 적재하는 라이브러리이다.
+카프카의 스트림 데이터를 처리하기 위해 아파치 스파크, 아파치 플링크, 아파치 스톰, 플루언티드와 같은 다양한 오픈소스 애플리케이션이 존재하지만
+카프카 스트림즈를 사용해야 하는 이유는 무엇일까?
+
+스트림즈는 카프카에서 공식적으로 지원하는 라이브러리이다.
+카프카 버전이 오를 때마다 스트림즈 라이브러리도 같이 릴리즈 된다.
+카프카 클러스터와 완벽하게 호환되면서 스트림 처리에 필요한 기능들을 제공한다.
+카프카 클러스터를 운영하면서 실시간 스트림 처리를 해야하는 필요성이 있다면
+카프카 스트림즈 애플리케이션으로 개발하는 것을 1순위로 고려하는 것이 좋다.
+
+카프카 스트림즈의 구조와 사용법을 알기 위해 우선 토폴로지와 관련된 개념을 익혀야 한다.
+토폴로지란 2개 이상의 노드들과 선으로 이루어진 집합을 뜻한다.
+토포롤지의 종류로는 링형, 트리형, 성형 등이 있는데 스트림즈에서 사용하는 토폴로지는 트리 형태와 유사하다.
+
+카프카 스트림즈에서 토폴로지를 이루는 노드를 하나의 프로세서라고 부르고
+노드와 노드를 이은 선을 스트림이라고 부른다.
+스트림은 토픽의 데이터를 뜻하는데 프로듀서와 컨슈머에서 활용했던 레코드와 동일하다.
+
+프로세서에서는 소스 프로세서, 스트림 프로세서, 싱크 프로세서 3가지가 있다.
+* 소스 프로세서: 데이터를 처리하기 위해 최초로 선언해야하는 노드로 하나 이상의 토픽에서 데이터를 가져오는 역할을 한다. 
+* 스트림 프로세서: 다른 프로세서가 반환한 데이터를 처리하는 역할을 한다. 변환, 분기처리와 같은 로직이 데이터 처리의 일종이라고 볼 수 있다.
+* 싱크 프로세서: 데이터를 특정 카프카 토픽으로 저장하는 역할을 하며 스트림즈로 처리된 데이터의 최종 종착지다.
+
+스트림즈 DSL과 프로세서 API 2가지 방법으로 개발 가능하다.
+스트림즈 DSL은 스트림 프로세싱에 쓰일 만한 다양한 기능들을 자체 API로 만들어 놓았기 때문에 대부분 변환 로직을 어렵지 않게 개발할 수 있다.
+만약 스트림즈 DSL에서 제공하지 않는 일부 기능들의 경우 프로세서 API를 사용하여 구현할 수 있다.
+스트림즈 DSL과 프로세서 API가 구현할 수 있는 종류는 다음과 같다.
+
+* 스트림즈 DSL로 구현하는 데이터 처리 예시
+  * 메시지 값을 기반으로 토픽 분기 처리
+  * 지난 10분간 들어온 데이터의 개수 집계
+  * 토픽과 다른 토픽의 결합으로 새로운 데이터 생성
+* 프로세서 API로 구현하는 데이터 처리 예시
+  * 메시지 값의 종류에 따라 토픽을 가변적으로 전송
+  * 일정한 시간 간격으로 데이터 처리
+
+
+
 ## 3.6 카프카 커넥트
 
 ---
