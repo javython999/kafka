@@ -1629,6 +1629,138 @@ public class KafkaAdminClient {
   * 메시지 값의 종류에 따라 토픽을 가변적으로 전송
   * 일정한 시간 간격으로 데이터 처리
 
+### 3.5.1 스트림즈 DSL
+스트림즈 DSL로 구성된 애플리케이션을 코드로 구현하기 전에 스트림즈 DSL에서 다루는 새로운 개념들에 대해 짚고 넘어가야 한다.
+스트림즈 DSL에는 레코드의 흐름을 추상화한 3가지 개념인 `KStream`, `KTable`, `GlobalKTable`이 있다.
+이 3가지 개념은 컨슈머, 프로듀서, 프로세서 API에서는 사용되지 않고 스트림즈 DSL에서만 사용되는 개념이다.
+
+> KStream
+
+KStream은 레코드의 흐름을 표현한 것으로 메시지 키와 메시지 값으로 구성되어있다.
+KStream으로 데이터를 조회하면 토픽에 존재하는 (또는 KStream에 존재하는) 모든 레코드가 출력된다.
+KStream은 컨슈머로 토픽을 구독하는 것과 동일한 선상에서 사용하는 것이라고 볼 수 있다.
+
+> KTable
+
+KTable은 KStream과 다르게 메시지 키를 기준으로 묶어서 사용한다.
+KStream은 토픽의 모든 레코드를 조회할 수 있지만 KTable은 유니크한 메시지 키를 기준으로 가장 최신 레코드를 사용한다.
+그로므로 KTable로 데이터를 조회하면 메시지 키를 기준으로 가장 최신에 추가된 레코드의 데이터가 출력된다.
+새로 데이터를 적재할 때 동일한  메시지 키가 있을 겨웅 데이터가 업데이트 되었다고 볼 수 있다.
+
+> GlobalKTable
+
+GlobalKTable은 KTable과 동일하게 메시지 키를 기준으로 묶어서 사용된다.
+그러나 KTable로 선언된 토픽은 1개 파티션이 1개 태스크에 할당되어 사용되고, 
+GlobalKTable로 선언된 토픽은 모든 파티션 데이터가 각 태스크에 할당되어 사용된다는 차이점이 있다.
+
+KStream과 KTable을 조인하려면 반드시 코파티셔닝(co-partitioning) 되어야 한다.
+코파티셔닝이란 조인을 하는 2개 데이터의 파티션 개수가 동일하고 파티셔닝 전략을 동일하게 맞추는 작업이다.
+파티션 개수가 동일하고 파티셔닝 전략이 같은 경우에는 동일한 메시지 키를 가진 데이터가 동일한 태스크에 들어가는 것을 보장한다.
+이를 통해 각 태스크는 KStream의 레코드와 KTable의 메시지 키가 동일할 경우 조인을 수행할 수 있다.
+
+문제는 조인을 수행하려는 토픽들이 코파티셔닝되어 있음을 보장할 수 없다는 것이다.
+KStream과 KTable로 사용하는 2개의 토픽이 파티션 개수가 다를 수 도 있고 파티션 전략이 다를 수 있다.
+이런 경우에는 조인을 수행할 수 없다.
+코파티셔닝이 되지 않은 2개의 토픽을 조인하는 로직이 담긴 스트림즈 애플리케이션을 실항하면 TopologyException이 발생한다.
+
+조인을 수행하는 KStream과 KTable이 코파티셔닝되어 있지 않으면 KStream 또는 KTable을 리파티셔닝하는 과정을 거쳐야 한다.
+리파티셔닝이란 새로운 토픽에 새로운 메시지 키를 가지도록 재배열하는 과정이다. 리파티셔닝 과정을 거쳐 KStream 토픽과 KTable로 사용하는 토픽이 코파티셔닝되도록 할 수 있다.
+
+리파티셔닝을 하는 과정은 토픽에 기존 데이터를 중복해서 생성할 뿐만 아니라 파티션을 재배열하기 위해 프로세싱하는 과정도 거쳐야 한다.
+이렇게 코파티셔닝되지 않은 KStream과 KTable을 조인해서 사용하고 싶다면 KTable을 GlobalKTable로 선언하여 사용하면 된다.
+GlobalKTable은 코파티셔닝되지 않은 KStream과 데이터 조인을 할 수 있다.
+GlobalKTable로 정의된 데이터는 스트림즈 애플리케이션의 모든 태스크에 동일하게 공유되어 사용되기 때문이다.
+
+다만 GlobalKTable을 사용하면 각 태스크마다 GlobalKTable로 정의된 모든 데이터를 저장하고 사용하기 때문에 
+스트림즈 애플리케이션의 로컬 스토리지의 사용량이 증가하고 네트워크, 브로커에 부하가 생기므로 되도록이면 작은 용략의 데이터일 경우에만 사용하는 것이 좋다.
+많은 양의 데이터를 가진 토픽으로 조인할 경우에는 리파티셔닝을 통해 KTable을 사용하는 것을 권장한다.
+
+> 스트림즈 DSL 주요 옵션
+
+스트림즈 DSL 애플리케이션을 실행할 때 설정해야 하는 필수 옵션과 선택 옵션이 있다.
+필수 옵션은 사용자가 반드시 설정해야 하는 옵션이다.
+
+* 필수 옵션
+  * `bootstrap-server`: 프로듀서가 데이터를 전송할 대상 카프카 클러스터에 속한 브로커의 호스트 이름:포트를 1개 이상 작성한다. 2개 이상 브로커 정보를 입력하여 브로커에 이슈가 발생하더라도 접속하는 데에 이슈가 없도록 설정가능하다.
+  * `application.id`: 스트림즈 애플리케이션을 구분하기 위한 고유한 아이디어를 설정한다. 다른 로직을 가진 스트림즈 애플리케이션들은 서로 다른 application.id를 가진다.
+* 선택 옵션
+  * `default.key.serde`: 레코드의 메시지 키를 직렬화, 역직렬화하는 클래스를 지정한다. 기본값은 바이트 직렬화, 역직렬화 클래스인 `Serdes.ByteArray().getClass().getName()`이다.
+  * `default.value.serde`: 레코드의 메시지 값을 직렬화, 역직렬화하는 클래스를 지정한다. 기본값은 바이트 직렬화, 역직렬화 클래스인 `Serdes.ByteArray().getClass().getName()`이다.
+  * `num.stream.threads`: 스트림 프로세싱 실행 시 실행될 스레드 개수를 지정한다. 기본값은 1이다.
+  * `state.dir`: rockDB 저장소가 위치할 디렉토리를 지정한다. rockDB는 페이스북이 개발한 고성능의 key-value DB로서 카프카 스트림즈가 상태기반 데이터 처리를 할 때 로컬 저장소로 사용한다.
+  기본값으 `/tmp/kafka-streams`이다. 스트림즈 애플리케이션을 상용에 배포할때는 /tmp 디렉토리가 아닌 별도로 관리되는 디렉토리로 지정해야 안전하게 데이터가 저장된다.
+
+> 스트림즈 DSL - stream(), to()
+
+```java
+@Slf4j
+public class SimpleStream {
+
+    private static String APPLICATION_NAME = "streams-application";
+    private static String BOOTSTRAP_SERVERS = "my-kafka:9092";
+    private static String STREAM_LOG = "stream_log";
+    private static String STREAM_LOG_COPY = "streams_log_copy";
+
+    public static void main(String[] args) {
+        Properties props = new Properties();
+
+        // 스트림즈 애플리케이션은 애플리케이션 아이디를 지정해야 한다.
+        // 애플리케이션 아이디 값을 기준으로 병렬처리하기 때문이다.
+        // 기존에 사용하지 않은 이름을 아이디로 사용해야 한다.
+        props.put(StreamsConfig.APPLICATION_ID_CONFIG, APPLICATION_NAME);
+
+        // 스트림즈 애플리케이션과 연동할 카프카 클러스터 정보를 입력한다.
+        props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, BOOTSTRAP_SERVERS);
+
+        // 스트림 처리를 위한 메시지 키와 값의 역직렬화, 직렬화 방식을 지정한다.
+        props.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, Serdes.String().getClass());
+        props.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, Serdes.String().getClass());
+
+        // StreamBuilder는 스트림 토폴로지를 정의하기 위한 용도로 사용된다.
+        StreamsBuilder builder = new StreamsBuilder();
+
+        // stream_log 토픽으로부터 KStream 객체를 만들기 위해 StreamBuilder의 stream() 메서드를 사용했다.
+        // StreamBuilder는 stream() 외에 KTable을 만드는 table(), GlobalKTable을 만드는 globalTable() 메서드를 지원한다.
+        // stream(), table(), globalTable() 메서드들은 최초의 토픽 데이터를 가져오는 소스 프로세서 이다.
+        KStream<String, String> streamLog = builder.stream(STREAM_LOG);
+
+        // stream_log 토픽을 담은 KStream 객체를 다른 토픽으로 전송하기 위해 to() 메서드를 사용했다.
+        // to() 메서드는 KStream() 인스턴스의 데이터들을 특정 토픽으로 저장하기 위한 용도로 사용된다. 즉 싱크 프로세서이다.
+        streamLog.to(STREAM_LOG_COPY);
+
+        // StreamBuilder로 정의한 토폴로지에 대한 정보와 스트림즈 실행을 위한 기본 옵션을 파라미터로 KafkaStreams 인스턴스를 생성한다.
+        // KafkaStreams 인스턴스를 실행하려면 start() 메서드를 사용하면된다.
+        // 이 스트림 애플리케이션은 stream_log 토픽의 데이터를 stream_log_copy 토픽으로 전달한다.
+        KafkaStreams streams = new KafkaStreams(builder.build(), props);
+        streams.start();
+    }
+}
+```
+스트림즈 애플리케이션을 실행하기 전에 먼저 스트림즈의 소스 프로세서에서 사용하는 토픽을 생성해야한다.
+
+```shell
+bin/kafka-topics.sh --create --bootstrap-server my-kafka:9092 --partitions 3 --topic stream_log
+```
+
+```shell
+Created topic stream_log.
+```
+
+```shell
+$ bin/kafka-console-producer.sh --bootstrap-server my-kafka:9092 --topic stream_log
+>hello
+>kafka
+>stream 
+```
+```shell
+$ bin/kafka-console-consumer.sh --bootstrap-server my-kafka:9092 --topic stream_log_copy --from-beginning
+hello
+kafka
+stream
+```
+
+
+
 
 
 ## 3.6 카프카 커넥트
