@@ -1753,14 +1753,269 @@ $ bin/kafka-console-producer.sh --bootstrap-server my-kafka:9092 --topic stream_
 >stream 
 ```
 ```shell
-$ bin/kafka-console-consumer.sh --bootstrap-server my-kafka:9092 --topic stream_log_copy --from-beginning
+``$ bin/kafka-console-consumer.sh --bootstrap-server my-kafka:9092 --topic stream_log_copy --from-beginning
 hello
 kafka
 stream
 ```
 
+> 스트림 DSL - filter()
+
+토픽으로 들어온 문자열 데이터중 문자열의 길이가 5보다 큰 경우만 필터링하는 스트림즈 애플리케이션을 스트림 프로세서를 사용하여 만들 수 있다.
+메시지 키 또는 메시지 값을 필터링하여 특정 조거에 맞는 데이터를 골라낼 때는 `filter()` 메서드를 사용하면 된다.
+`filter()` 메서드는 스트림즈 DSL에서 사용 가능한 필터링 스트림 프로세서이다.
+
+```java
+@Slf4j
+public class FilterStream {
+
+    private static String APPLICATION_NAME = "streams-application";
+    private static String BOOTSTRAP_SERVERS = "my-kafka:9092";
+    private static String STREAM_LOG = "stream_log";
+    private static String STREAM_LOG_FILTER = "stream_log_filter";
+
+    public static void main(String[] args) {
+        Properties props = new Properties();
+
+        // 스트림즈 애플리케이션은 애플리케이션 아이디를 지정해야 한다.
+        // 애플리케이션 아이디 값을 기준으로 병렬처리하기 때문이다.
+        // 기존에 사용하지 않은 이름을 아이디로 사용해야 한다.
+        props.put(StreamsConfig.APPLICATION_ID_CONFIG, APPLICATION_NAME);
+
+        // 스트림즈 애플리케이션과 연동할 카프카 클러스터 정보를 입력한다.
+        props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, BOOTSTRAP_SERVERS);
+
+        // 스트림 처리를 위한 메시지 키와 값의 역직렬화, 직렬화 방식을 지정한다.
+        props.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, Serdes.String().getClass());
+        props.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, Serdes.String().getClass());
+
+        // StreamBuilder는 스트림 토폴로지를 정의하기 위한 용도로 사용된다.
+        StreamsBuilder builder = new StreamsBuilder();
+
+        // stream_log 토픽으로부터 KStream 객체를 만들기 위해 StreamBuilder의 stream() 메서드를 사용했다.
+        // StreamBuilder는 stream() 외에 KTable을 만드는 table(), GlobalKTable을 만드는 globalTable() 메서드를 지원한다.
+        // stream(), table(), globalTable() 메서드들은 최초의 토픽 데이터를 가져오는 소스 프로세서 이다.
+        KStream<String, String> streamLog = builder.stream(STREAM_LOG);
+
+        // 데이터를 필터링하는 filter() 메서드는 자바의 함수형 인터페이스인 Predicate를 파라미터로 받는다.
+        // Predicate는 함수형 인터페이스로 특정 조건을 표현할 때 사용할 수 있는데, 여기서는 메시지 키와 메시지 값에 대한 조건을 나타낸다.
+        KStream<String, String> filteredStream = streamLog.filter((key, value) -> value.length() > 5);
+
+        // 필터링된 KStream을 stream_log_filter 토픽에 저장하도록 소스프로세스를 작성하였다.
+        filteredStream.to(STREAM_LOG_FILTER);
+
+        KafkaStreams streams = new KafkaStreams(builder.build(), props);
+        streams.start();
+    }
+}
+```
+```shell
+$ bin/kafka-console-producer.sh --bootstrap-server my-kafka:9092 --topic stream_log
+>apache
+>kafka
+>streams
+>test
+```
+
+```shell
+$ bin/kafka-console-consumer.sh --bootstrap-server my-kafka:9092 --topic stream_log_filter --from-beginning
+apache
+streams
+```
+
+> 스트림 DSL - KTable과 KStream을 join()
+
+KTable과 KStream은 다음 메시지 키를 기준으로 조인할 수 있다.
+카프카에서는 실시간으로 들어오는 데이터들을 조인할 수 있다.
+
+이름을 메시지 키, 주소를 메시지 값으로 가지고 있는 KTable이 있고
+이름을 메시지 키, 주문한 물품을 메시지 값으로 가지고 있는 KStream이 있다고 가정하자.
+
+사용자가 물품을 주문하면 이미 토픽에서 저장된 이름:주소로 구성된 KTable과 조인하여 물품과 주소가 조합된 데이터를 새로 생성할 수 있다.
+사용자의 이벤트 데이터를 데이터베이스에 저장하지 않고도 조인하여 스트리밍 처리할 수 있다는 장점이 있다.
+이를 통해 이벤트 기반 스트리밍 데이터 파이프라인을 구성할 수 있다.
+
+KTable과 KStream을 조인할 때 가장 중요한 것은 코파티셔닝이 되어 있는지 확인하는 것이다.
+코파티셔닝되어 있지 않는 상태에서 KTable과 KStream을 조인하면 스트림 프로세서에서 TopologyException을 발생시키기 때문이다.
+그러므로 KTable로 사용할 토픽과 KStream으로 사용할 토픽을 생성할 때 동일한 파티션 개수, 동일한 파티셔닝을 사용하는 것이 중요하다.
+KTable로 사용할 토픽과 KSteram으로 사용할 토픽을 만들 때 둘다 파티션을 3개로 동일하게 만든다.
+파티셔닝 전략은 기본 파티셔너를 사용한다.
+KTable로 사용할 토픽은 address이고 KStream으로 사용할 토픽은 order이다.
+그리고 조인된 데이터를 저장할 토픽은 order_join으로 생성한다.
+
+```shell
+$ bin/kafka-topics.sh --create --bootstrap-server my-kafka:9092 --partitions 3 --topic address
+$ bin/kafka-topics.sh --create --bootstrap-server my-kafka:9092 --partitions 3 --topic order
+$ bin/kafka-topics.sh --create --bootstrap-server my-kafka:9092 --partitions 3 --topic order_join
+```
+
+```shell
+@Slf4j
+public class KstreamKtableJoin {
+
+    private static String APPLICATION_NAME = "order-join-application";
+    private static String BOOTSTRAP_SERVERS = "my-kafka:9092";
+    private static String ADDRESS_TABLE = "address";
+    private static String ORDER_STREAM = "order";
+    private static String ORDER_JOIN_STREAM = "order_join";
+
+    public static void main(String[] args) {
+        Properties props = new Properties();
+
+        // 스트림즈 애플리케이션은 애플리케이션 아이디를 지정해야 한다.
+        // 애플리케이션 아이디 값을 기준으로 병렬처리하기 때문이다.
+        // 기존에 사용하지 않은 이름을 아이디로 사용해야 한다.
+        props.put(StreamsConfig.APPLICATION_ID_CONFIG, APPLICATION_NAME);
+
+        // 스트림즈 애플리케이션과 연동할 카프카 클러스터 정보를 입력한다.
+        props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, BOOTSTRAP_SERVERS);
+
+        // 스트림 처리를 위한 메시지 키와 값의 역직렬화, 직렬화 방식을 지정한다.
+        props.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, Serdes.String().getClass());
+        props.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, Serdes.String().getClass());
 
 
+        // StreamBuilder는 스트림 토폴로지를 정의하기 위한 용도로 사용된다.
+        StreamsBuilder builder = new StreamsBuilder();
+
+        // KTable과 KStream을 생성한다.
+        KTable<String, String> addressTable = builder.table(ADDRESS_TABLE);
+        KStream<String, String> orderStream = builder.stream(ORDER_STREAM);
+
+        // 조인을 위해 KStream 인스턴스에 정의되어 있는 join() 메서드를 사용한다. 첫번째 파라미터로 조인을 수행할 KTable 인스턴스를 넣는다.
+        // KStream과 KTable에서 동일한 메시지 키를 가진 데이터를 찾았을 경우 각각의 메시지 값을 조합해서 어떤 데이터를 만들지 결정한다.
+        // 조인을 통해 성생된 데이터를 order_join 토픽에 저장하기 위해 to() 싱크 프로세서를 사용 한다.
+        orderStream.join(addressTable, (orderValue, addressValue) -> orderValue + " send to " + addressValue)
+                .to(ORDER_JOIN_STREAM);
+
+
+        KafkaStreams streams = new KafkaStreams(builder.build(), props);
+        streams.start();
+    }
+}
+```
+```shell
+$ bin/kafka-console-producer.sh --bootstrap-server my-kafka:9092 --topic address --property "parse.key=true" --property "key.separator=:"
+>kim:Seoul
+>Lee:Busan
+>Park:Naju
+```
+
+```shell
+$ bin/kafka-console-producer.sh --bootstrap-server my-kafka:9092 --topic order --property "parse.key=true" --property "key.separator=:"
+>kim:PC
+>Lee:Monitor
+```
+```shell
+Lee:Monitor send to Busan
+kim:PC send to Seoul
+```
+KTable에 존재하는 메시지 키를 기준으로 KStream이 데이터를 조인하여 order_join 토픽에서는 물품과 주소 데이터가 합쳐진 것을 볼 수 있다.
+조인할 때 사용했던 메시지 키는 조인이 된 데이터의 메시지 키로 들어간다.
+
+만약 사용자의 주소가 변경되는 경우는 어떻게 될까?
+KTable은 동일한 메시지 키가 들어올 경우 가장 마지막의 레코드를 유효한 데이터로 보기 때문에 가장 최근에 바뀐 주소로 조인을 수행할 것이다.
+현재 kim 사용자 주소가 Seoul인데 Jeju로 변경 되도록 address 레코드를 추가 해보자.
+
+```shell
+bin/kafka-console-producer.sh --bootstrap-server my-kafka:9092 --topic address --property "parse.key=true" --property "key.separator=:"
+>kim:Jeju
+
+bin/kafka-console-producer.sh --bootstrap-server my-kafka:9092 --topic order --property "parse.key=true" --property "key.separator=:"
+>kim:Keyboard
+```
+```shell
+$ bin/kafka-consoconsumer.sh --bootstrap-server my-kafka:9092 --topic order_join --property print.key=true --property key.separator=":" --from-beginning
+Lee:Monitor send to Busan
+kim:PC send to Seoul
+kim:Keyboard send to Jeju
+```
+
+> 스트림즈 DSL - GlobalKTable과 KStream을 join()
+
+order 토픽과 address 토픽은 코파티셔닝되어 있으므로 각각 KStream과 KTable로 선언해서 조인을 할 수 있었다.
+그러나 코파티셔닝되어 있지 않은 토픽을 조인해야할 때는 어떻게 해야할까?
+코파티셔닝되지 않은 데이터를 조인하는 방법은 두 가지가 있다.
+
+1. 리파티셔닝을 수행한 이후에 코파티셔닝이 된 상태로 조인 처리
+2. KTable로 사용하는 토픽을 GlobalKTable로 선언하여 사용
+
+GlobalKTable로 토픽을 선언해서 사용해 보겠다.
+파티션 개수가 다른 2개의 토픽을 조인하는 예제를 GlobalKTable로 선언해 작성해 볼 것인데
+파티션 2개로 이루어진 address_v2 토픽을 생성한다.
+
+```shell
+$ bin/kafka-topics.sh --create --bootstrap-server my-kafka:9092 --partitions 2 --topic address_v2
+```
+
+```java
+@Slf4j
+public class KstreamGlobalKtableJoin {
+
+    private static String APPLICATION_NAME = "order-join-application";
+    private static String BOOTSTRAP_SERVERS = "my-kafka:9092";
+    private static String ADDRESS_TABLE = "address_v2";
+    private static String ORDER_STREAM = "order";
+    private static String ORDER_JOIN_STREAM = "order_join";
+
+    public static void main(String[] args) {
+        Properties props = new Properties();
+
+        // 스트림즈 애플리케이션은 애플리케이션 아이디를 지정해야 한다.
+        // 애플리케이션 아이디 값을 기준으로 병렬처리하기 때문이다.
+        // 기존에 사용하지 않은 이름을 아이디로 사용해야 한다.
+        props.put(StreamsConfig.APPLICATION_ID_CONFIG, APPLICATION_NAME);
+
+        // 스트림즈 애플리케이션과 연동할 카프카 클러스터 정보를 입력한다.
+        props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, BOOTSTRAP_SERVERS);
+
+        // 스트림 처리를 위한 메시지 키와 값의 역직렬화, 직렬화 방식을 지정한다.
+        props.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, Serdes.String().getClass());
+        props.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, Serdes.String().getClass());
+
+
+        // StreamBuilder는 스트림 토폴로지를 정의하기 위한 용도로 사용된다.
+        StreamsBuilder builder = new StreamsBuilder();
+
+        // GlobalKTable과 KStream을 생성한다.
+        GlobalKTable<String, String> addressGlobalTable = builder.globalTable(ADDRESS_TABLE);
+        KStream<String, String> orderStream = builder.stream(ORDER_STREAM);
+
+        // 첫번째 파라미터에는 GlobalKTable 인스턴스를 입력한다.
+        // GlobalKTable은 KTable의 조인과 다르게 레코드를 매칭할 때 KStream의 메시지 키와 메시지 값 둘다 사용할 수 있다.
+        // 여기서는 KStream의 메시지 키를 GlobalKTable의 메시지 키와 매칭하도록 설정했다.
+        orderStream.join(addressGlobalTable, (orderKey, orderValue) -> orderKey, (orderValue, addressValue) -> orderValue + " send to " + addressValue)
+                .to(ORDER_JOIN_STREAM);
+
+
+        KafkaStreams streams = new KafkaStreams(builder.build(), props);
+        streams.start();
+    }
+}
+```
+```shell
+$ bin/kafka-console-producer.sh --bootstrap-server my-kafka:9092 --topic address_v2 --property "parse.key=true" --property "key.separator=:"
+>kim:Seoul
+>Lee:Busan
+```
+```shell
+$ bin/kafka-console-producer.sh --bootstrap-server my-kafka:9092 --topic order --property "parse.key=true" --property "key.separator=:"
+>kim:mouse
+>Lee:speaker
+```
+
+```shell
+$ bin/kafka-console-consumer.sh --bootstrap-server my-kafka:9092 --topic order_join --property print.key=true --property key.separator=":" --from-beginning
+Lee:Monitor send to Busan
+Lee:speaker send to Busan
+kim:PC send to Seoul
+kim:Keybourd send to Jeju
+kim:mouse send to Seoul
+```
+
+언뜻 결과물을 보면 KTable과 크게 다르지 않아 보인다.
+그러나 GlobalKTable로 선언한 토픽은 토픽에 존재하는 모든 데이터를 태스크마다 저장하고 조인 처리를 수행하는 점이 다르다.
+그리고 조인을 수행할 때 KStream의 메시지 키뿐만 아니라 메시지 값을 기준으로도 매칭하여 조인할 수 있다는 점도 다르다.
 
 
 ## 3.6 카프카 커넥트
