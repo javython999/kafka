@@ -2017,6 +2017,105 @@ kim:mouse send to Seoul
 그러나 GlobalKTable로 선언한 토픽은 토픽에 존재하는 모든 데이터를 태스크마다 저장하고 조인 처리를 수행하는 점이 다르다.
 그리고 조인을 수행할 때 KStream의 메시지 키뿐만 아니라 메시지 값을 기준으로도 매칭하여 조인할 수 있다는 점도 다르다.
 
+### 3.5.2 프로세서 API
+프로세서 API는 스트림즈 DSL 보다 투박한 코드를 가진다.
+토폴로지를 기준으로 데이터를 처리한다는 관점에서는 동일한 역할을 한다.
+스트림즈 DSL이 제공하지 않는 상세 로직의 구현이 필요하면 프로세서 API를 활용해야 한다.
+프로세서 API는 스트림즈 DSL의 KStream, KTable, GlobalKTable 개념이 없다는 점을 주의해야 한다.
+
+```java
+@Slf4j
+public class FilterProcessor implements Processor<String, String> {
+    // 스트림 프로세서 클래스를 생성하기 위해서는 kafka-streams 라이브러리에서 제공하는 Processor 또는 Transformer 인터페이스를 사용해야 한다.
+
+    // 프로세서에 대한 정보를 담고 있다.
+    // ProcessorContext 클래스로 생성된 인스턴스로 현재 스트림 처리 중인 토폴로지의 토픽 정보, 애플리케이션 아이디를 조회할 수 있다.
+    // schedule(), forward(), commit() 등 프로세싱 처리에 필요한 메서드를 사용할 수 있다.
+    private ProcessorContext context;
+
+
+    /**
+     * init() 메서드는 스트림프로세서의 생성자이다.
+     * 프로세싱 처리에 필요한 리소스를 선언하는 구문이 들어갈 수 있다.
+     */
+    @Override
+    public void init(ProcessorContext context) {
+        this.context = context;
+    }
+
+    /**
+     *  실질적인 프로세싱 로직이 들어가는 부분이다. 1개의 레코드를 받는 것을 가정하여 데이터를 처리하면 된다.
+     *  메시지 키, 메시지 값을 파라미터로 받는다.
+     *  필터링된 데이터의 경우 forward() 메서드를 사용하여 다음 토폴로지(다음 프로세서)로 넘어가도록 한다.
+     *  처리가 완료된 경우에는 commit()을 호출하여 명시적으로 데이터가 처리되었음을 선언한다.
+     */
+    @Override
+    public void process(String key, String value) {
+        if (value.length() > 5) {
+            context.forward(key, value);
+        }
+        context.commit();
+    }
+
+    /**
+     * FilterProcessor가 종료되기 전에 호출되는 메서드이다.
+     * 프로세싱을 하기 위해 사용했떤 리소스를 해제하는 구문을 넣는다.
+     */
+    @Override
+    public void close() {
+        log.info("Closing Processor");
+    }
+}
+```
+
+```java
+@Slf4j
+public class SimpleProcessor {
+
+    private static String APPLICATION_NAME = "processor-application";
+    private static String BOOTSTRAP_SERVERS = "my-kafka:9092";
+    private static String STREAM_LOG = "stream_log";
+    private static String STREAM_LOG_FILTER = "stream_log_filter";
+
+    public static void main(String[] args) {
+        Properties props = new Properties();
+        props.put(StreamsConfig.APPLICATION_ID_CONFIG, APPLICATION_NAME);
+        props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, BOOTSTRAP_SERVERS);
+        props.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, Serdes.String().getClass());
+        props.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, Serdes.String().getClass());
+
+        // Topology 클래스는 프로세서 API를 사용한 토폴로지를 구성하기 위해 사용된다.
+        Topology topology = new Topology();
+
+        // stream_log 토픽을 소스 프로세서로 가져오기 위해 addSource() 메서드를 사용했다.
+        // addSource() 메서드의 첫 번째 파라미터에는 소스 프로세서의 이름을 입력하고 두 번째 파라미터는 대상 토픽 이름을 입력한다.
+        // 스트림 프로세서를 사용하기 위해 addProcessor() 메서드를 사용했다.
+        // addProcessor() 메서드의 첫 번째 파라미터에는 스트림 프로세서의 이름을 입력한다. 두 번째 파라미터는 사용자가 정의한 프로세서 인스턴스를 입력한다. 세 번째 파라미터는 부모 노드를 입력해야 하는데 여기서 부모 노드는 Source이다.
+        // STREAM_LOG_FILTER를 싱크 프로세서로 사용하여 데이터를 저장하기 위해 addSink() 메서드를 사용했다.
+        // 첫 번째 파라미터는 싱크 프로세서의 이름을 입력한다. 두 번째 파라미터는 저장할 토픽의 일므을 입력한다. 세 번째 파라미터는 부모 노드를 입력하는데 필터링 처리가 완료된 데이터를 저장해야 하므로 부모 노드는 Processor이다.
+        topology.addSource("Source", STREAM_LOG)
+                .addProcessor("Process", FilterProcessor::new, "Source")
+                .addSink("Sink", STREAM_LOG_FILTER, "Process");
+
+
+        // 작성 완료한 topology 인스턴스를 kafkaStreams 인스턴스의 파라미터로 넣어서 스트림을 생성하고 실행할 수 있다.
+        KafkaStreams streams = new KafkaStreams(topology, props);
+        streams.start();
+    }
+}
+```
+```shell
+$ bin/kafka-console-producer.sh --bootstrap-server my-kafka:9092 --topic stream_log
+>hello
+>kafka
+>streams
+>api
+```
+
+```shell
+$ bin/kafka-console-consumer.sh --bootstrap-server my-kafka:9092 --topic stream_log_filter --from-beginning
+streams
+```
 
 ## 3.6 카프카 커넥트
 
