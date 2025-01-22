@@ -2290,6 +2290,128 @@ curl -X DELETE http://localhost:8083/connectors/local-file-source
 커넥터를 종료한 후 커넥터 리스트를 확인하여 커넥터가 완전히 중지되었는지 확인한다.
 
 
+> 소스 커넥터
+
+소스 커넥터는 소스 애플리케이션 또는 소스 파일로부터 데이터를 가져와 토픽으로 넣는 역할을 한다.
+오픈소스 소스 커넥터를 사용해도 되지만 라이선스 문제나 로직이 원하는 요구사항과 맞지 않아서 직접 개발해야 하는 경우도 있는데
+이때는 카프카 커넥트 라이브러리에서 제공하는 SourceConnector와 SourceTask 클래스를 사용하여 직접 소스 커넥터를 구현하면 된다.
+직접 구현한 소스 커넥터를 빌드하여 jar파일로 만들고 커넥트를 실행 시 플러그인으로 추가하여 사용할 수 있다.
+
+소스 커넥터를 만들때 필요한 클래스는 2개다.
+
+1. SourceConnector
+2. SourceTask
+
+SourceConnector는 태스크를 실행하기 전 커넥터 설정파일을 초기화하고 어떤 태스크 클래스를 사용할 것인지 정의하는데 사용한다.
+SourceTask는  소스 애플리케이션 또는 소스 파일로부터 데이터를 가져와서 토픽으로 데이터를 보내는 역할을 수행한다.
+SourceTask 특징은 토픽에서 사용하는 오프셋이 아닌 자체적으로 사용하는 오프셋을 사용한다는 점이다.
+이 오프셋은 소스 애플리케이션 또는 소스 파일을 어디까지 읽었는지 저장하는 역할을 한다.
+
+```java
+/**
+ * SourceConnector를 상속받은 사용자 정의 클래스를 선언한다.
+ * 사용자가 지정한 이클래스 이름은 최종적으로 커넥트에서 호출할 때 사용되므로 명확하게 어떻게 사용되는지 적으면 좋다.
+ * 예) MongoDbSourceConnector
+ */
+public class TestSourceConnector extends SourceConnector {
+
+    /**
+     * 사용자가 JSON 또는 config 파일 형태로 입력한 설정값을 초기화하는 메서드다.
+     * 만약 올바른 값이 아니라면 여기서 ConnectException()을 호출하여 커넥터를 종료할 수 있다.
+     */
+    @Override
+    public void start(Map<String, String> map) {
+        
+    }
+
+    /**
+     * 이 커넥터가 사용할 태스크 클래스를 지정한다.
+     */
+    @Override
+    public Class<? extends Task> taskClass() {
+        return null;
+    }
+
+    /**
+     * 태스크 개수가 2개 이상인 경우 태스크마다 각기 다른 옵션을 설정할 때 사용한다.
+     */
+    @Override
+    public List<Map<String, String>> taskConfigs(int i) {
+        return List.of();
+    }
+
+    /**
+     * 커넥터가 종료될 때 필요한 로직을 작성한다.
+     */
+    @Override
+    public void stop() {
+
+    }
+
+    /**
+     * 커넥터가 사용할 설정값에 대한 정보를 받는다. 커넥터의 설정값은  ConfigDef 클래스를 통해 각 설정의 이름, 기본값, 중요도, 설명을 정의할 수 있다.
+     */
+    @Override
+    public ConfigDef config() {
+        return null;
+    }
+
+    /**
+     * 커넥터의 버전을 리턴한다.
+     * 커넥트에 포함된 커넥터 플러그인을 조회할 때 이 버전이 노출된다.
+     * 지속적으로 유지보수하고 신규 배포할 때 이 메서드가 리턴하는 버전 값을 변경해야 한다.
+     */
+    @Override
+    public String version() {
+        return "";
+    }
+}
+```
+
+```java
+public class TestSourceTask extends SourceTask {
+
+    /**
+     * 태스크의 버전을 지정한다.
+     * 보통 커넥터의 version() 메서드에서 지정한 버전과 동일한 버전으로 작성하는 것이 일반적이다.
+     */
+    @Override
+    public String version() {
+        return "";
+    }
+
+    /**
+     * 태스크가 시작할 때 필요한 로직을 작성한다.
+     * 태스크는 실질적으로 데이터를 처리하는 역할을 하므로 데이터 처리에 필요한 리소스를 여기서 초기화하면 좋다.
+     */
+    @Override
+    public void start(Map<String, String> map) {
+        
+    }
+
+    /**
+     * 소스 애플리케이션 또는 소스 파일로부터 데이터를 읽어오는 로직을 작성한다.
+     * 데이터를 읽어오면 토픽으로 보낼 데이터를 SourceRecord로 정의한다.
+     * SourceRecord 클래스는 토픽으로 데이터를 정의하기 위해 사용한다.
+     * List<SourceRecord> 인스턴스에 데이터를 담아 리턴하면 데이터가 토픽으로 전송된다.
+     */
+    @Override
+    public List<SourceRecord> poll() throws InterruptedException {
+        return List.of();
+    }
+
+    /**
+     * 태스크가 종료될 때 필요한 로직을 작성한다.
+     */
+    @Override
+    public void stop() {
+
+    }
+}
+```
+
+
+
 ---
 
 # 4. 카프카 상세 개념 설명

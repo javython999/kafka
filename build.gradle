@@ -20,6 +20,7 @@ repositories {
 dependencies {
     implementation 'org.apache.kafka:kafka-clients:2.5.0'
     implementation 'org.apache.kafka:kafka-streams:2.5.0'
+    implementation 'org.apache.kafka:connect-api:2.5.0'
     implementation 'org.slf4j:slf4j-simple:2.0.16'
     implementation 'org.slf4j:slf4j-api:2.0.16'
 
@@ -30,4 +31,10 @@ dependencies {
 
 tasks.named('test') {
     useJUnitPlatform()
+}
+
+jar {
+    from {
+        configurations.compile.collect {it.isDirectory() ? it : zipTree(it)}
+    }
 }
