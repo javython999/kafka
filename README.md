@@ -2410,6 +2410,130 @@ public class TestSourceTask extends SourceTask {
 }
 ```
 
+### 3.6.2 싱크 커넥터
+
+싱크 커넥터는 토픽의 데이터를 타깃 애플리케이션 또는 타깃 파일로 저장하는 역할을 한다.
+카프카 커넥트 라이브러리에서 제공하는 SinkConnector와 SinkTask 클래스를 사용하면 직접 싱크 커넥터를 구현할 수 있다.
+직접 구현한 싱크 커넥트는 빌드하여 jar로 만들고 커넥트의 플러그인으로 추가하여 사용할 수 있다.
+
+싱크 커넥터를 만들 때 필요한 클래스는 2개다.
+
+1. SinkConnector
+2. SinkTask
+
+SinkConnector는 태스크를 실행하기 전에 사용자로부터 입력받은 설정값을 초기화하고 어떤 태스크 클래스를 사용할 것인지 정의하는 데에 사용한다.
+SinkTask는 실제로 데이터를 처리하는 로직을 구현한다. 커넥트에서 컨슈머 역할을 하고 데이터를 저장하는 코드를 가지게 된다.
+
+```java
+/**
+ * SinkConnector를 상속받은 사용자 정의 클래스를 선언한다.
+ * 사용자가 지정한 이 클래스 이름은 최종적으로 커넥트에서 호출할 때 사용되므로 명확하게 어떻게 사용되는지 적으면 좋다. 예) MongoDbSinkConnector
+ * 
+ */
+public class TestSinkConnector extends SinkConnector {
+
+    /**
+     * 사용자가 JSON 또는 config 파일 형태로 입력한 설정값을 초기화하는 메서드다.
+     * 만약 올바른 값이 아니라면 여기서 ConnectException()을 호출하여 커넥터를 종료할 수 있다.
+     */
+    @Override
+    public void start(Map<String, String> map) {
+        
+    }
+
+    /**
+     * 이 커넥터가 사용할 태스크 클래스를 지정한다.
+     */
+    @Override
+    public Class<? extends Task> taskClass() {
+        return null;
+    }
+
+    /**
+     * 태스크 개수가 2개 이상인 경우 태스크마다 각기 다른 옵션을 설정할 때 사용한다.
+     */
+    @Override
+    public List<Map<String, String>> taskConfigs(int maxTasks) {
+        return List.of();
+    }
+
+    /**
+     * 커넥터가 종료될 때 필요한 로직을 작성한다.
+     */
+    @Override
+    public void stop() {
+        
+    }
+
+    /**
+     *  커넥터가 사용할 설정값에 대한 정보를 받는다.
+     *  커넥터의 설정값은 ConfigDef 클래스를 통해 각 설정의 이름, 기본값, 중요도, 설명을 정의할 수 있다.
+     */
+    @Override
+    public ConfigDef config() {
+        return null;
+    }
+
+    /**
+     * 커넥터의 버전을 리턴한다.
+     */
+    @Override
+    public String version() {
+        return "";
+    }
+}
+```
+
+```java
+public class TestSinkTask extends SinkTask {
+
+
+    /**
+     * 태스크의 버전을 지정한다.
+     * 보통 커넥터의 version() 메서드에서 지정한 버전과 동일한 버전으로 작성하는 것이 일반적이다.
+     */
+    @Override
+    public String version() {
+        return "";
+    }
+
+    /**
+     * 태스크가 시작할 때 필요한 로직을 작성한다.
+     * 태스크는 실질적으로 데이터를 처리하는 역할을 하므로 데이터 처리에 필요한 리소스를 여기서 초기화 한다.
+     */
+    @Override
+    public void start(Map<String, String> map) {
+
+    }
+
+    /**
+     * 싱크 애플리케이션 또는 싱크 파일에 저장할 데이터를 토픽에서 주기적으로 가져오는 메서드이다.
+     * 토픽의 데이터들은 여러 개 의 SinkRecord로 묶어 파라미터로 사용할 수 있다.
+     * SinkRecord는 토픽의 한 개 레코드이며 토픽, 파티션, 타임스탬프 등의 정보를 담고 있다.
+     */
+    @Override
+    public void put(Collection<SinkRecord> collection) {
+
+    }
+
+    /**
+     * put() 메서드를 통해 가져온 데이터를 일정 주기로 싱크 애플리케이션 또는 싱크 파일에 저장할때 사용하는 로직이다.
+     */
+    @Override
+    public void flush(Map<TopicPartition, OffsetAndMetadata> currentOffsets) {
+
+    }
+
+    /**
+     * 태스크가 종료될 때 필요한 로직을 작성한다.
+     * 태스크에서 사용한 리소스를 종료해야할 때 여기에 종료 코드를 구현한다.
+     */
+    @Override
+    public void stop() {
+
+    }
+}
+```
 
 
 ---
