@@ -2535,6 +2535,122 @@ public class TestSinkTask extends SinkTask {
 }
 ```
 
+## 3.7 카프카 미러메이커2
+카프카 미러메이커2는 서로 다른 두 개의 카프카 클러스터 간 토픽을 복제하는 애플리케이션이다.
+프로듀서와 컨슈머를 사용해 직접 미러링하는 애플리케이션을 만들어도 되지만
+미러메이커2를 사용하는 이유는 토픽의 모든 것을 복제할 필요성이 있기 때문이다.
+토픽에 있는 레코드의 고유한 메시지 키, 메시지 값, 파티션을 완전히 동일하게 옮기는 것은 어려운 작업이다.
+특히 동일한 파티션에 동일한 레코드가 들어가도록하는 것은 어려운 작업이다.
+복제하기 전 클러스터에서 사용하던 파티셔너에 대한 정보가 없이는 불가능하다.
+또한, 복제하는 토픽의 파티션 개수가 달라진다면 복제된 데이터를 저장하는 토픽의 파티션 개수도 달라져야하므로
+어드민까지 조합한 형태로 개발이 필요하다. 이 모든 기능을 지원하는 것이 미러메이커2이다.
+
+> 미러메이커2를 활용한 단방향 토픽 복제
+
+미러메이커2를 사용하기 위해서는 카프카 바이너리 디렉토리의 config 디렉토리에 포함된 `connect-mirror-maker.properties` 파일을 수정해야 한다.
+해당 파일은 카프카 클러스터들에 대한 정보와 토픽 정보와 토픽을 복제하면서 사용할 내부 토픽에 대한 정보가 포함된다.
+여기서는 카프카 클러스터 A(a-kafka:9092)와 카프카 클러스터 B(b-kafka:9092)가 있을 경우를 가정한다.
+클러스터 A에 존재하는 test라는 토픽을 클러스터 B로 복제할 경우 다음과 같이 설정한다.
+
+```shell
+# 복제할 클러스터의 닉네임을 작성한다.
+cluster = A, B
+
+# 미러메이커2에서 사용할 클러스터의 접속정보를 작성한다.
+A.bootstrap.server = a-kafka:9092
+B.bootstrap.server = b-kafka.9092
+
+# 클러스터 A에서 클러스터 B로 복제를 진행할 것인지, 그리고 어떤 토픽을 복제할 것인지 명시한다.
+A->B.enabled = true
+A->B.topics = test
+
+# 미러메이커는 양방향 토픽 복제가 가능하다. 여기서는 클러스태 A에서 클러스터 B로 단방향 설정을 했다.
+B->A.enabled = false
+B->A.topics = .*
+
+# 복제되어 신규 생성된 토픽의 복제 개수를 설정한다.
+replication.factor=1
+
+# 토픽 복제에 필요한 데이터를 저장하는 내부 토픽의 복제 개수를 설정한다.
+checkpoints.topic.replication.factor=1
+heartbeats.topic.replication.factor=1
+offset-sync.topic.replication.factor=1
+offset.storage.replication.factor=1
+status.storage.replication.factor=1
+config.storage.replication.factor=1
+```
+
+설정이 완료되면 다음 명령어로 실행한다.
+```shell
+$ bin/connect-mirror-maker.sh config/connect-mirror-maker.properties
+```
+
+```shell
+$ bin/kafka-console.producer.sh --bootstrap-server a-kafka:9092 --topic test
+> a
+> b
+> c
+```
+```shell
+$ bin/kafka-console-consumer.sh --bootstrap-server b-kafka:9092 --topic A.test --from-beginning
+a
+b
+c
+```
+미러메이커2는 복제된 토픽에 클러스터 이름을 접두사로 붙인다.
+클러스터 A의 test 토픽은 클러스터 B에서 A.test 토픽으로 저장된다.
+
+토픽의 파티션 변경 동기화를 진행해보자. 클러스터 A의 파티션을 5로 변경한다.
+```shell
+$ bin/kafka-topics.sh --bootstrap-server a-kafka:9092 --topic test --alter --partitions 5
+```
+미러메이커2는 실행 시 기본값 5초마다 토픽의 설정값을 확인하고 동기화 한다.
+
+```shell
+$ bin/kafka-topics.sh --bootstrap-server b-kafka:9092 --topic A.test --describe
+Topic A.test    partitionCount:5    ReplicationFactor: 1    Configs:
+    Topic: A.test   Partition: 0     Leader: 0      Replicas: 0     Isr: 0
+    Topic: A.test   Partition: 1     Leader: 0      Replicas: 0     Isr: 0
+    Topic: A.test   Partition: 2     Leader: 0      Replicas: 0     Isr: 0
+    Topic: A.test   Partition: 3     Leader: 0      Replicas: 0     Isr: 0
+    Topic: A.test   Partition: 4     Leader: 0      Replicas: 0     Isr: 0
+```
+
+### 3.7.1 미러메이커2를 활용한 지리적 복제(Geo-Replication)
+미러메이커2를 사용함으로써 카프카 클러스터 단위의 활용도를 높일 수 있다.
+미러메이커2가 제공하는 단방향, 양방향 복제 기능, ACL 복제, 새 토픽 자동 감지 등의 기능은 클러스터가 2개 이상있을 때 더욱 빛이 난다.
+
+> 액티브-스탠바이(Active-Standby) 클러스터 운영
+
+서비스 애플리케이션과 통신하는 카프카 클러스터 외에 재해 복구(disaster recovery)를 위해 임시 카프카 클러스터를 하나 더 구성하는 경우 액티브-스탠바이 클러스터로 운영할 수 있다.
+이때 서비스 애플리케이션들이 직접 통신하는 카프카 클러스터를 '액티브 클러스터'라고 부르고 나머지 1개 카프카 클러스터를 '스탠바이 클러스터'라고 부른다.
+미러메이커2를 사용하여 액티브 클러스터의 모든 토픽을 스탠바이 클러스터에 복제하여 액티브 클러스터의 예상치 못한 장애에 대응할 수 있다.
+
+액티브-스탠바이 클러스터 운영은 안정적으로 서버를 운영하기 위한 전통적인 방식이다.
+각 클러스터 간의 구역을 완벽하게 분리함으로써 만에 하나 발생할 수 있는 액티브 클러스터의 장애에 대응할 수 있는 것이다.
+
+> 액티브-액티브(Active-Active) 클러스터 운영
+
+글로벌 서비스를 운영할 경우 서비스 애플리케이션의 통신 지연을 최소화하기 위해 
+2개 이상의 클러스터를 두고 서로 데이터를 미러링하면서 사용할 수 있는데
+이때 액티브-액티브 클러스터를 운영하는 것이 하나의 방법이 될 수 있다.
+
+> 허브 앤 스포크(Hub and spoke) 클러스터 운영
+
+각 팀에서 소규모 카프카 클러스터를 사용하고 있을 때 
+각 팀의 카프카 클러스터의 데이터를 한 개의 카프카 클러스터에 모아 데이터 레이크로 사용하고 싶다면
+허브 앤 스포크 방식의 클러스터 구성이 한가지 방안이 될 수 있다.
+
+데이터 레이크 특성상 서비스에서 생성된 데이터를 수집, 가공, 분석하는 격리된 플랫폼이 필요하다.
+미러메이커2를 사용하여 각 팀에서 사용하는 카프카 클러스터에 존재하는 데이터를 수집하고 
+데이터 레이크용 카프카 클러스터에서 가공, 분석하여 가치있는 데이터를 찾아낼 수 있다.
+
+## 3.8 정리
+카프카는 이처럼 클러스터를 데이터 생태계에서 효과적으로 사용하기 위한 도구를 제공한다.
+이제 필요한 것은 데이터를 다룰 때 어떤 도구를 사용해야 효과적일지 판단하는 것이다.
+각각의 도구는 고유한 특징이 있으며 그 특징을 잘 살려서 사용한다면 데이터를 더욱 풍부하게 사용할 수 있을 것이다.
+
+
 
 ---
 
