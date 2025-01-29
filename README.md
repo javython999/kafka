@@ -2876,10 +2876,165 @@ ascks 옵션은 all로 설정된다.
 트랜잭션 프로듀서는 데이터를 레코드로 저장할 뿐만 아니라 트랜잭션의 시작과 끝을 표현하기 위해 트랜잭션 코드를 한개 더 보낸다.
 트랜잭션 컨슈머는 파티션에 저장된 트랜잭션 레코드를 보고 트랜잭션이 완료되었음을 확인하고 데이터를 가져간다.
 
-
-
-
 ## 4.3 카프카 컨슈머
+### 4.3.1 멀티 스레드 컨슈머
+카프카는 처리량을 늘리기 위해 파티션과 컨슈머 개수를 늘려서 운영할 수 있다.
+카프카에서 공식적으로 지원하는 라이브러리인 자바는 멀티 스레드를 지원하므로
+자바 애플리케이션에서는 멀티 스레드로 동작하는 멀티 컨슈머 스레드를 개발 적용할 수 있다.
+
+멀티 스레드로 컨슈머를 안전하게 운영하기 위해서는 고려해야할 부분이 많다.
+멀티 스레드 애플리케이션으로 개발할 경우 하나의 프로세스 내부에 스레드가 여러 개 생성되어 실행되기 때문에
+하나의 컨슈머 스레드에서 예외적 상황이 발생할 경우 프로세스 자체가 종료될 수 있고 
+이는 다른 컨슈머 스레드에까지 영향을 미칠 수 있다.
+
+컨슈머 스레드들이 비정상적으로 종료될 경우 데이터 처리에서 중복 또는 유실이 발생할 수 있기 때문이다.
+각 컨슈머 스레드 간에 영향이 미치지 않도록 스레드 세이프 로직, 변수를 적용해야한다.
+
+컨슈머를 멀티 스레드로 활용하는 방식은 크게 두 가지로 나뉜다.
+
+1. 멀티 워커 스레드: 컨슈머 스레드는 1개만 실행하고 데이터를 처리하는 워커 스레드를 여러개 실행하는 방법
+2. 컨슈머 멀티 스레드: 컨슈머 인스턴스에서 poll() 메서드를 호출하는 스레드를 여러 개 띄워서 사용하는 방법
+
+> 카프카 컨슈머 멀티 워커 스레드 전략
+
+브로커로부터 전달받은 레코드들을 병렬로 처리한다면 1개의 컨슈머 스레드로 받은 데이터들을 더욱 향상된 속도로 처리할 수 있다.
+멀티 스레드를 사용하면 각 기 다른 레코드들의 데이터 처리를 동시에 실행할 수 있기 때문에 처리 시간을 현저히 줄일 수 있다.
+
+```java
+@Slf4j
+public class ConsumerWorker implements Runnable {
+
+  private String recordValue;
+
+  public ConsumerWorker(String recordValue) {
+    this.recordValue = recordValue;
+  }
+
+  @Override
+  public void run() {
+    log.info("thread: {}    record:{}", Thread.currentThread().getName(), recordValue);
+  }
+}
+```
+```java
+@Slf4j
+public class ConsumerWithMultiWorker {
+
+    private final static String BOOTSTRAP_SERVERS = "my-kafka:9092";
+    private final static String TOPIC_NAME = "test";
+    private final static String GROUP_ID = "test-group";
+
+    public static void main(String[] args) {
+        Properties props = new Properties();
+        props.put(BOOTSTRAP_SERVERS_CONFIG, BOOTSTRAP_SERVERS);
+        props.put(GROUP_ID_CONFIG, GROUP_ID);
+        props.put(KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+        props.put(VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+        props.put(ENABLE_AUTO_COMMIT_CONFIG, true);
+        props.put(AUTO_COMMIT_INTERVAL_MS_CONFIG, 10000);
+
+        KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props);
+        consumer.subscribe(List.of(TOPIC_NAME));
+        ExecutorService executorService = Executors.newCachedThreadPool();
+
+        while (true) {
+            ConsumerRecords<String, String> records = consumer.poll(Duration.ofSeconds(10));
+            for (ConsumerRecord<String, String> record : records) {
+                ConsumerWorker worker = new ConsumerWorker(record.value());
+                executorService.execute(worker);
+            }
+        }
+    }
+}
+```
+스레드를 사용하면 한번 poll()을 통해 받은 데이터를 병렬처리함으로써 속도의 이점을 얻을 수 있다.
+그러나 몇 가지 주의사항이 있다.
+
+1. 리밸런싱, 컨슈머 장애시에 데이터 유실이 발생
+   * 데이터 처리가 끝나지 않았음에도 불구하고 커밋을 하기 때문에 발생할 수 있다.
+2. 레코드 처리의 역전 현상
+   * for 반복구문으로 스레드를 생성하므로 레코드별로 스레드의 생성은 순서대로 진행된다.
+   * 스레드의 처리 시간은 다를 수 있다.
+   * 이로 인해 레코드의 순서가 바뀌는 현상이 발생할 수 있다.
+
+> 카프카 컨슈머 멀티 스레드 전략
+
+하나의 파티션은 동일 컨슈머 중 최대 1개까지 할당된다.
+그리고 하나의 컨슈머는 여러 파티션에 할당 될 수 있다.
+이런 특징을 가장 잘 살리는 방법은 1개의 애플리케이션에 
+구독하고자 하는 토픽의 파티션 개수만큼 컨슈머 스레드 개수를 늘려서 운영하는 것이다.
+컨슈머 스레드를 늘려서 운영하면 각 스레드에 각 파티션이 할당되며, 파티션의 레코드들을 병철처리할 수 있다.
+
+```java
+@Slf4j
+public class ConsumerWorker implements Runnable {
+
+  private Properties props;
+  private String topic;
+  private String threadName;
+  private KafkaConsumer<String, String> consumer;
+
+
+  /**
+   *  KafkaConsumer 인스턴스를 생성하기 위해 필요한 변수를 컨슈머 스레드 생성자 변수로 받는다.
+   */
+  public ConsumerWorker(Properties props, String topic, int number) {
+    this.props = props;
+    this.topic = topic;
+    this.threadName = "consumer-thread-" + number ;
+  }
+
+  @Override
+  public void run() {
+    /**
+     * KafkaConsumer 클래스는 스레드 세이프하지 않다.
+     * 이 때문에 스레드별로 KafkaConsumer 인스턴스를 별개로 만들어 운영한다.
+     * KafkaConsumer 인스턴스를 여러 스레드에서 실행하면 ConcurrentModificationException 예외가 발생한다.
+     */
+    consumer = new KafkaConsumer<>(props);
+
+    /**
+     * 생성자에서 받은 토픽을 명시적으로 구독한다.
+     */
+    consumer.subscribe(List.of(topic));
+
+    /**
+     * poll 메서드를 통해 리턴받은 레코드들을 처리한다.
+     */
+    while (true) {
+      ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(1));
+      for (ConsumerRecord<String, String> record : records) {
+        log.info("{} - {}", threadName, record.toString());
+      }
+    }
+  }
+}
+```
+```java
+@Slf4j
+public class MultiConsumerThread {
+
+    private final static String BOOTSTRAP_SERVER = "my-kafka:9092";
+    private final static String TOPIC_NAME = "test";
+    private final static String GROUP_ID = "test-group";
+    private final static int CONSUMER_COUNT = 3;
+
+    public static void main(String[] args) {
+        Properties props = new Properties();
+        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, BOOTSTRAP_SERVER);
+        props.put(ConsumerConfig.GROUP_ID_CONFIG, GROUP_ID);
+        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+
+        ExecutorService executorService = Executors.newCachedThreadPool();
+        for (int i = 0; i < CONSUMER_COUNT; i++) {
+            ConsumerWorker consumerWorker = new ConsumerWorker(props, TOPIC_NAME, i);
+            executorService.execute(consumerWorker);
+        }
+    }
+}
+```
+
 ## 4.4 스프링 카프카
 ## 4.5 정리
 
