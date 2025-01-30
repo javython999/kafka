@@ -3035,6 +3035,85 @@ public class MultiConsumerThread {
 }
 ```
 
+### 4.3.2 컨슈머 랙
+컨슈머 랙은 토픽의 최신 오프셋과 컨슈머 오프셋간의 차이다.
+프로듀서는 계속해서 새로운 데이터를 저장하고 컨슈머는 자신이 처리할 수 있는 만큼 데이터를 가져간다.
+컨슈머 랙을 통해 컨슈머가 정상 작동하는지 확인할 수 있기 때문에 필수적으로 모니터링해야 하는 지표이다.
+
+컨슈머 랙은 컨슈머 그룹과 토픽, 파티션별로 생성된다.
+1개의 토픽에 3개의 파티션이 있고 1개의 컨슈머 그룹이 토픽을 구독하여 데이터를 가져가면
+컨슈머 랙은 총 3개가 된다.
+
+컨슈머 랙을 모니터링하는 것은 카프카를 통한 데이터 파이프라인을 운영하는 데에 핵심적인 역할을 한다.
+컨슈머의 장애를 확인할 수 있고 파티션 개수를 정하는 데에 참고할 수 있기 때문이다.
+
+컨슈머 랙을 확인하는 방법은 3가지가 있다.
+
+1. 카프카 명령어를 활용
+2. metrics() 메서드를 사용
+3. 외부 모니터링 툴을 사용
+
+> 카프카 명령어를 사용하여 컨슈머 랙 조회
+
+```shell
+bin/kafka-consumer-groups.sh --bootstrap-server my-kafka:9092 --group test-group --describe
+```
+```shell
+GROUP           TOPIC           PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG             CONSUMER-ID     HOST            CLIENT-ID
+test-group      test            1          37              37              0               -               -               -
+test-group      test            0          24              24              0               -               -               -
+test-group      test            2          36              36              0               -               -               -
+```
+test-group이 test 토픽을 구독하고 있는 것을 확인할 수 있다.
+test 토픽은 3개의 파티션이 존재하므로 3개의 컨슈머 랙을 확인할 수 있다.
+
+> 컨슈머 metrics() 메서드를 사용하여 컨슈머 랙 조회
+
+```java
+@Slf4j
+public class ConsumerLag {
+
+    private final static String TOPIC_NAME = "test";
+    private final static String BOOTSTRAP_SERVERS = "my-kafka:9092";
+    private final static String GROUP_ID = "test-group";
+
+    public static void main(String[] args) {
+        Properties props = new Properties();
+        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, BOOTSTRAP_SERVERS);
+        props.put(ConsumerConfig.GROUP_ID_CONFIG, GROUP_ID);
+        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+
+        KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props);
+        consumer.subscribe(List.of(TOPIC_NAME));
+
+        for (Map.Entry<MetricName, ? extends Metric> entry: consumer.metrics().entrySet()) {
+            if (entry.getKey().name().contains("records-lag")) {
+                Metric metric = entry.getValue();
+                log.info("{}: {}", entry.getKey().name(), metric.metricValue());
+            }
+        }
+    }
+}
+```
+metric() 메서드로 컨슈머 랙을 확인하는 방법은 3가지 문제점이 있다.
+
+1. 컨슈머가 정상 작동할 경우에만 확인 가능
+2. 컨슈머 애플리케이션에 컨슈머 랙 모니터링 코드를 중복해서 작성
+3. 모니터링하는 코드를 추가할 수 없는 서드 파티 애플리케이션의 컨슈머 랙 모니터링 불가
+
+> 외부 모니터링 툴을 사용하여 컨슈머 랙 조회
+
+컨슈머 랙을 모니터링하는 가장 최선의 방법은 외부 모니터링 툴을 사용하는 것이다.
+데이터독, 컨플루언트 컨트롤 센터와 같은 카프카 클러스터 종합 모니터링 툴을 사용하면
+카프카 운영에 필요한 다양한 지표를 모니터링할 수 있다.
+
+#### 4.3.2.1 카프카 버러우
+카프카 버러우는 링크드인에서 공개한 오픈소스 컨슈머 랙 체크 툴이다.
+버러우를 카프카 클러스터와 연동하면 REST API를 통해 컨슈머 그룹별로 컨슈머 랙을 조회할 수 있다.
+
+
+
 ## 4.4 스프링 카프카
 ## 4.5 정리
 
