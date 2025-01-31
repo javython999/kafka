@@ -18,6 +18,9 @@ repositories {
 }
 
 dependencies {
+    implementation 'org.springframework.kafka:spring-kafka:2.5.10:RELEASE'
+    implementation 'org.springframework.boot:spring-boot-starter:2.4.0'
+
     implementation 'org.apache.kafka:kafka-clients:2.5.0'
     implementation 'org.apache.kafka:kafka-streams:2.5.0'
     implementation 'org.apache.kafka:connect-api:2.5.0'
