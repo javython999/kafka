@@ -3146,6 +3146,375 @@ metric() 메서드로 컨슈머 랙을 확인하는 방법은 3가지 문제점�
 기존 카프카 클라이언트 라이브러리를 래핑하여 만든 스프링 카프카 라이브러리는 
 카프카 클라이언트에서 사용하는 여러 가지 패턴을 미리 제공한다.
 
+### 4.4.1 스프링 카프카 프로듀서
+
+스프링 카프카 프로듀서는 '카프카 템플릿'이라고 불리는 클래스를 사용하여 데이터를 전송할 수 있다.
+카프카 템플릿은 프로듀서 팩토리 클래스를 통해 생성할 수 있다.
+카프카 템플릿을 사용하는 방법은 크게 두 가지가 있다.
+
+1. 스프링 카프카에서 제공하는 기본 카프카 템플릿 사용
+2. 직접 사용자가 카프카 템플릿을 프로듀서 팩토리로 생성하는 방법
+
+> 기본 카프카 템플릿
+
+기본 프로듀서 팩토리를 통해 생성된 카프카 템플릿을 사용한다.
+기본 카프카 템플릿을 사용할 때는 application.yaml에 프로듀서 옵션을 넣고 사용할 수 있다.
+
+```java
+@SpringBootApplication
+@RequiredArgsConstructor
+public class SpringKafkaProducer implements CommandLineRunner {
+
+    private static String TOPIC_NAME = "test";
+
+    /**
+     * 스프링 카프카에서 제공하는 기본 KafkaTemplate 객체로 주입된다.
+     * application.yaml에 선언한 옵션값은 자동으로 주입된다.
+     */
+    private final KafkaTemplate<Integer, String> template;
+
+    public static void main(String[] args) {
+        SpringApplication.run(SpringKafkaProducer.class, args);
+    }
+
+    /**
+     * send() 메서드를 사용해 토픽 이름과 메시지 값을 넣어 전송한다.
+     * 카프카 프로듀서의 send() 메서드와 유사한 것을 확인할 수 있다.
+     */
+    @Override
+    public void run(String... args) throws Exception {
+        for (int i = 0; i < 10; i++) {
+            template.send(TOPIC_NAME, "spring-kafka" + i);
+        }
+        System.exit(0);
+    }
+}
+```
+KafkaTemplate은 `send(String topic, V data)` 이외에도 여러 가지 데이터 전송 메서드들을 오버로딩하여 제공한다.
+* send(String topic, K key, V data): 메시지 키, 메시지 값을 포함하여 특정 토픽으로 전달
+* send(String topic, Integer partition, K key, V data): 메시지 키, 메시지 값이 포함된 레코드를 특정 파티션으로 전달
+* send(String topic, Integer partition, Long timestamp K, V data): 메시지 키, 메시지 값 타임스탬프가 포함된 레코드를 특정 토픽, 특정 파티션으로 전달
+* send(ProducerRecord<K, V> record): 프로듀서 레코드 객체를 전송
+
+> 커스텀 카프카 템플릿
+
+커스텀 카프카 템플릿은 프로듀서 팩토리를 통해 만든 카프카 템플릿 객체를 빈으로 등록하여 사용하는 것이다.
+프로듀서에 필요한 각종 옵션을 선언하여 사용할 수 있으며 한 스프링 카프카 애플리케이션 내부에서 다양한 종류의 카프카 프로듀서 인스턴스를 생성하고 싶다면 이방식을 사용하면된다.
+
+A클러스터로 전송하는 카프카 프로듀서와 B클러스터로 전송하는 카프카 프로듀서를 동시에 사용학 ㅗ싶다면
+커스텀 카프카 템플릿을 사용하여 2개의 카프카 템플릿을 빈으로 등록하여 사용할 수 있다.
+
+```java
+@Configuration
+public class CustomKafkaTemplateProducerConfiguration {
+
+
+    /**
+     * KafkaTemplate 객체를 리턴하는 빈 객체
+     * 메서드 이름인 'customKafkaTemplate'으로 빈 객체를 생성한다.
+     */
+    @Bean
+    public KafkaTemplate<String, String> customKafkaTemplate() {
+        Map<String, Object> props = new HashMap<>();
+        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "my-kafka:9092");
+        props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
+        props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
+        props.put(ProducerConfig.ACKS_CONFIG, "all");
+        ProducerFactory<String, String> factory = new DefaultKafkaProducerFactory<>(props);
+        return new KafkaTemplate<>(factory);
+    }
+
+}
+```
+```java
+@SpringBootApplication
+@RequiredArgsConstructor
+public class CustomKafkaTemplateProducer implements CommandLineRunner {
+
+    private static String TOPIC_NAME = "test";
+
+    /**
+     *
+     */
+    private final KafkaTemplate<String, String> customKafkaTemplate;
+
+    public static void main(String[] args) {
+        SpringApplication.run(CustomKafkaTemplateProducer.class, args);
+    }
+
+    @Override
+    public void run(String... args) throws Exception {
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+        CompletableFuture<SendResult<String, String>> future = customKafkaTemplate.send(TOPIC_NAME, "customKafkaTemplate - " + LocalDateTime.now().format(formatter));
+
+        future.whenComplete((result, ex) -> {
+            if (ex == null) {
+                System.out.println("Message sent successfully: " + result.getProducerRecord().value());
+            } else {
+                System.err.println("Message failed to send: " + ex.getMessage());
+            }
+        }).join();
+    }
+}
+```
+### 4.4.2 스프링 카프카 컨슈머
+
+스프링 카프카 컨슈머는 기존 컨슈머를 2개의 타입으로 나누고 커밋을 7가지로 나누어 세분화했다.
+
+* 타입
+  1. 레코드 리스너
+     * AcknowledgingMessageListener
+     * ConsumerAwareMessageListener
+     * AcknowledgingConsumerAwareMessageListener
+  2. 배치 리스너
+     * BatchAcknowledgingMessageListener
+     * BatchConsumerAwareMessageListener
+     * BatchAcknowledgingConsumerAwareMessageListener
+* 커밋
+  1. RECORD
+  2. BATCH
+  3. TIME
+  4. COUNT
+  5. COUNT_TIME
+  6. MANUAL
+  7. MANUAL_IMMEDIATE
+
+리스너를 생성하고 사용하는 방식은 두 가지가 있다.
+
+1. 기본 리스너 컨테이너를 사용
+2. 컨테이너 팩토리를 사용하여 직접 리스너를 만드는 방식
+
+> 기본 리스너 컨테이너
+
+레코드 리스너
+```java
+@Slf4j
+@SpringBootApplication
+public class RecordListener {
+
+  public static void main(String[] args) {
+    SpringApplication.run(RecordListener.class, args);
+  }
+
+  /**
+   * 가장 기본적인 리스너 선언이다.
+   * topics와 groupId를 설정하여 토픽과 그룹 아이디를 지정한다.
+   * poll()이 호출되어 가져온 레코드들을 차례대로 개별 레코드의 메시지 값을 파라미터로 받게 된다.
+   * 파라미터로 컨슈머 레코드를 받기 때문에 메시지 키, 메시지 ㄱ밧에 대한 처리를 이 메서드 안에서 수행하면 된다.
+   */
+  @KafkaListener(topics = "test", groupId = "test-group-00")
+  public void recordListener(ConsumerRecord<String, String> record) {
+    log.info("recordListener - {}", record);
+  }
+
+  /**
+   * 메시지 값을 파라미터로 받는 리스너이다.
+   * 여기서는 스프링 카프카의 역직렬화 클래스 기본값인 StringDeserializer를 사용했으므로 String 클래스로 메시지 값을 전달받았다.
+   */
+  @KafkaListener(topics = "test", groupId = "test-group-01")
+  public void singleTopicListener(String message) {
+    log.info("singleTopicListener - {}", message);
+  }
+
+  /**
+   * 개별 리스너에 카프카 컨슈머 옵션값을 부여하고 싶다면 properties 옵션을 사용하면 된다.
+   */
+  @KafkaListener(topics = "test", groupId = "test-gorup-02", properties = {"max.poll.interval.ms:60000", "auto.offest.reset.earliest"})
+  public void singleTopicWithPropertiesListener(String message) {
+    log.info("singleTopicWithPropertiesListener - {}", message);
+  }
+
+  /**
+   * 2개 이상의 카프카 컨슈머 스레드를 실행하고 싶다면 concurrency 옵션을 사용하면 된다.
+   * concurrency 옵션ㄱ밧에 해당하는 만큼 컨슈머 스레드를 만들어 병렬처리한다.
+   */
+  @KafkaListener(topics = "test", groupId = "test-gorup-03", concurrency = "3")
+  public void concurrentTopicListener(String message) {
+    log.info("concurrentTopicListener - {}", message);
+  }
+
+  /**
+   * 특정 토픽의 특정 파티션만 구독하고 싶다면 topicPartitions 파라미터를 사용한다.
+   * PartitionOffset 애노테이션을 활용하면 특정 파티션의 특정 오프셋까지 지정할 수 있다.
+   */
+  @KafkaListener(
+          topicPartitions = {
+                  @TopicPartition(topic = "test01", partitions = {"0", "1"}),
+                  @TopicPartition(topic = "test02", partitionOffsets = @PartitionOffset(partition = "0", initialOffset = "3"))},
+          groupId = "test-group-04")
+  public void listenSpecificPartition(ConsumerRecord<String, String> record) {
+    log.info("listenSpecificPartition - {}", record);
+  }
+}
+```
+배치 리스너
+```java
+@Slf4j
+@SpringBootApplication
+public class BatchListener {
+
+    public static final String TOPIC_NAME = "test";
+
+    public static void main(String[] args) {
+        SpringApplication.run(BatchListener.class, args);
+    }
+
+    /**
+     *  컨슈머 레코드 묶음을 파라미터로 받는다.
+     *  카프카 클라이언트 라이브러리에서 poll() 메서드로 리턴 받은 ConsumerRecords를 리턴받아 사용하는 것과 동일하다.
+     */
+    @KafkaListener(topics = TOPIC_NAME, groupId = "test-group-01")
+    public void batchListener(ConsumerRecords<String, String> records) {
+        records.forEach(record -> {
+            log.info("batchListener(ConsumerRecords) - {}", record);
+        });
+    }
+
+    /**
+     *  메시지 값들을 List 자료구조로 받아서 처리한다.
+     */
+    @KafkaListener(topics = TOPIC_NAME, groupId = "test-group-02")
+    public void batchListener(List<String> records) {
+        records.forEach(recordValue -> {
+            log.info("batchListener(List) - {}", recordValue);
+        });
+    }
+
+    /**
+     *  2개 이상의 컨슈머 스레드로 배치 리스너를 운영할 경우에는 concurrency 옵션을 함께 선언하여 사용한다.
+     */
+    @KafkaListener(topics = TOPIC_NAME, groupId = "test-group-03", concurrency = "3")
+    public void concurrentBatchListener(ConsumerRecords<String, String> records) {
+        records.forEach(record -> {
+
+           log.info("concurrentBatchListener(ConsumerRecords) - thread - {} - {}", Thread.currentThread().getName(), record);
+        });
+    }
+}
+```
+배치 컨슈머 리스너, 배치 커밋 리스너
+```java
+@Slf4j
+@SpringBootApplication
+public class BatchConsumerAwareMessageListener {
+
+    private static final String TOPIC_NAME = "test";
+
+
+    public static void main(String[] args) {
+        SpringApplication.run(BatchConsumerAwareMessageListener.class, args);
+    }
+
+    /**
+     *  AckMode를 MANUAL 또는 MANUAL_IMMEDIATE로 사용할 경우에는 수동 커밋을 하기 위해
+     *  파라미터로 Acknowledgement 인스턴스를 받아야 한다.
+     *  acknowledge() 메서드를 호출함으로써 커밋을 수행할 수 있다.
+     */
+    @KafkaListener(topics = TOPIC_NAME, groupId = "test-group-01")
+    public void commitListener(ConsumerRecords<String, String> records, Acknowledgment ack) {
+        records.forEach(record -> log.info("commitListener - {}", record));
+        ack.acknowledge();
+    }
+
+    /**
+     *  동기 커밋, 비동기 커밋을 사용하고 싶다면 컨슈머 인스턴스를 파라미터로 받아서 사용할 수 있다.
+     *  consummer 인스턴스의 commitSync(), commitAsync() 메서드를 호출하면 사용자가 원하는 타이밍에 커밋할 수 있도록 로직을 추가할 수 있다.
+     *  다만 리스너가 커밋을 하지 않도록 AckMode는 MANUAL 또는 MANUAL_IMMEDIATE로 설정해야 한다.
+     */
+    @KafkaListener(topics = TOPIC_NAME, groupId = "test-group-02")
+    public void consumerCommitListener(ConsumerRecords<String, String> records, Consumer<String, String> consumer) {
+        records.forEach(record -> log.info("consumerCommitListener - {}", record));
+        consumer.commitAsync();
+    }
+}
+```
+
+> 커스텀 리스너 컨테이너
+
+서로 다른 설정을 가진 2개 이상의 리스너를 구현하거나 리밸런스 리스너를 구현하기 위해서는 커스텀 리스너 컨테이너를 사용해야 한다.
+커스텀 리스너 컨테이너를 만들기 위해서 스프링 카프카에서는 카프카 리스너 컨테이너 팩토리 인스턴스를 생성해야 한다.
+카프카 리스너 컨테이너 팩토리를 빈으로 등록하고 KafkaListener 애노테이션에서 커스텀 리스너 컨테이너 팩토리를 등록하면
+커스텀 컨테이너를 사용할 수 있다.
+
+```java
+@Configuration
+public class ListenerContainerConfiguration {
+
+    /**
+     * KafkaListenerContainerFactory 빈 객체를 리턴하는 메서드를 생성한다.
+     * 이 메서드 이름은 커스텀 리스너 컨테이너 팩토리로 선언할 때 사용한다.
+     */
+    @Bean
+    public KafkaListenerContainerFactory<ConcurrentMessageListenerContainer<String, String>> customContainerFactory() {
+
+        /**
+         * 카프카 컨슈머를 실행할 때 필요한 옵션값들을 선언한다.
+         */
+        Map<String, Object> props = new HashMap<>();
+        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "my-kafka:9092");
+        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+
+        /**
+         * 컨슈머 옵션값을 파라미터로 받는 DefaultKafkaConsumerFactory 인스턴스를 생성한다.
+         * DefaultConsumerFactory는 리스너 컨테이너 팩토리를 생성할 때 컨슈머 기본 옵션을 설정하는 용도로 사용된다.
+         */
+        DefaultKafkaConsumerFactory<Object, Object> cf = new DefaultKafkaConsumerFactory<>(props);
+
+        /**
+         * ConcurrentKafkaListenerContainerFactory는 리스너 컨테이너를 만들기 위해 사용된다.
+         * 이름에서 알 수 있다시피 2개 이상의 컨슈머 리스너를 만들 때 사용되며 concurrency를 1로 설정할 경우 1개 컨슈머 스테드로 실행된다.
+         */
+        ConcurrentKafkaListenerContainerFactory<String, String> factory = new ConcurrentKafkaListenerContainerFactory<>();
+
+        /**
+         * 리밸런스 리스너를 선언하기 위해 setConsumerRebalanceListener 메서드를 호출한다.
+         * setConsumerRebalanceListener는 스프링 카프카에서 제공하는 메서드로 기존에 사용되는 카프카 컨슈머 리밸런스 리스너에 2개의 메서드를 호출한다.
+         * onPartitionsRevokeBeforeCommit은 커밋이 전에 리밸런스가 발생했을 때,
+         * onPartitionsRevokeAfterCommit은 커밋이 일어난 이후에 리밸런스가 발생했을 때 호출된다.
+         */
+        factory.getContainerProperties().setConsumerRebalanceListener(new ConsumerAwareRebalanceListener() {
+
+            @Override
+            public void onPartitionsRevokedBeforeCommit(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
+
+            }
+
+            @Override
+            public void onPartitionsRevokedAfterCommit(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
+
+            }
+
+            @Override
+            public void onPartitionsAssigned(Collection<TopicPartition> partitions) {
+
+            }
+
+            @Override
+            public void onPartitionsLost(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
+
+            }
+        });
+
+        /**
+         * 레코드 리스너를 사용함을 명시하기 위해 setBatchListener() 메서드에 false를 파라미터로 넣는다.
+         * 만약 배치 리스너를 사용하고 싶다면 true를 설정하면 된다.
+         */
+        factory.setBatchListener(false);
+
+        /**
+         * AckMode를 설정한다.
+         */
+        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.RECORD);
+
+        /**
+         * 컨슈머 설정값을 가지고 있는 DefaultKafkaConsumerFactory 인스턴스를 ConcurrentKafkaListenerContainerFactory의 컨슈머 팩토리에 설정한다.
+         */
+        factory.setConsumerFactory(cf);
+        return factory;
+    }
+}
+```
 
 ## 4.5 정리
 

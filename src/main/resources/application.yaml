@@ -1,0 +1,15 @@
+spring:
+  application:
+    name: 'kafka'
+  kafka:
+    producer:
+      bootstrap-servers: my-kafka:9092
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+    consumer:
+      bootstrap-servers: my-kafka:9092
+    listener:
+      #type: single
+      type: batch
+      ack-mode: manual_immediate
