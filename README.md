@@ -231,7 +231,7 @@ Dynamic configs for topic hello.kafka are:
 ### 2.2.2 kafka-console-producer.sh
 생성된 hello.kafka 토픽에 데이터를 넣을 수 있는 kafka-console-producer.sh 명령어를 실행해 보자.
 토픽에 넣는 데이터는 `레코드`라고 부르며 `메시지 키(key)`와 `메시지 값(value)`으로 이루어져 있다.
-이번에는 메사지 키 없이 메시지 값만 보내도록 하자.
+이번에는 메시지 키 없이 메시지 값만 보내도록 하자.
 메시지 키는 자바의 null로 기본 설정되어 브로커로 전송된다.
 
 ```shell
