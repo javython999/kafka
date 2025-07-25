@@ -359,7 +359,7 @@ hello-group     hello.kafka     0          4               4               0    
 ```shell
 bin/kafka-verifiable-producer.sh --bootstrap-server my-kafka:9092 --max-message 10 --topic verify-test
 ```
-* `--max-message`: kafka-verifiable-producer.sh로 내보내는 데이터 개수를 지정한다. 만약 -1을 지정하면 kafka-verifiable-producer.sh가 종료될 때까지 계쏙 데이터를 토픽으로 보낸다.
+* `--max-message`: kafka-verifiable-producer.sh로 내보내는 데이터 개수를 지정한다. 만약 -1을 지정하면 kafka-verifiable-producer.sh가 종료될 때까지 계속 데이터를 토픽으로 보낸다.
 * `--topic`: 데이터를 받을 토픽을 지정한다.
 
 ```shell
